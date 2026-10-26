@@ -43,19 +43,76 @@ try {
 	assert.equal(tool.parameters.additionalProperties, false);
 	for (const forbidden of ["model", "context", "effort", "fast", "permissions"]) assert.ok(!(forbidden in tool.parameters.properties), forbidden);
 
+	// Pi binds action methods when a session starts; mirror that for the thinking level the reviewer reads.
+	result.runtime.getThinkingLevel = () => "xhigh";
+	// Stub of the active Pi model and ctx.modelRegistry.streamSimple: no network, answers from a queue.
+	const piModel = { provider: "smoke-provider", id: "smoke-active-model", reasoning: true };
+	const reviewCalls = [];
+	const answers = [];
+	const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 } };
+	const modelRegistry = {
+		streamSimple(model, context, options) {
+			reviewCalls.push({ model, context, options });
+			const text = answers.shift() ?? "not json";
+			return { result: async () => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", usage, model: model.id, provider: model.provider }) };
+		},
+	};
 	const notes = [];
+	const confirms = [];
 	const ctx = {
 		cwd: project,
 		hasUI: false,
 		mode: "print",
+		model: piModel,
+		modelRegistry,
 		sessionManager: { getSessionId: () => "ext-smoke-session" },
-		ui: { notify: (msg, type) => notes.push([type, msg]), confirm: async () => true },
+		ui: { notify: (msg, type) => notes.push([type, msg]), confirm: async (title, message) => (confirms.push(message), true) },
 	};
 	const updates = [];
 	let res = await tool.execute("c1", { action: "run", name: "w", task: "REMEMBER fig" }, undefined, (u) => updates.push(u), ctx);
 	assert.match(res.content[0].text, /model=claude-opus-5-5 context=1m effort=high fast=false/);
+
+	// Default policy review: the active Pi model approves once, with no tools, no history, low thinking.
+	answers.push('{"decision":"approve","reason":"routine cleanup inside the task"}');
 	res = await tool.execute("c2", { action: "run", name: "w", task: "PERMISSION" }, undefined, undefined, ctx);
-	assert.match(res.content[0].text, /"optionId":"ro"/, "no UI must fail closed even though confirm would say yes");
+	assert.match(res.content[0].text, /"optionId":"ao"/, "review approval selects allow_once");
+	assert.match(res.content[0].text, /Pi's model \(smoke-provider\/smoke-active-model\) reviewed 1 Cursor permission request\(s\): 1 approved/);
+	assert.deepEqual(res.usage, usage, "reviewer usage is reported on the tool result");
+	const call = reviewCalls[0];
+	assert.equal(call.model, piModel, "reviewer uses ctx.model");
+	assert.equal(call.context.tools, undefined);
+	assert.equal(call.context.messages.length, 1);
+	assert.match(call.context.messages[0].content[0].text, /rm -rf build/);
+	assert.equal(call.options.reasoning, "low");
+	assert.ok(call.options.maxTokens > 0 && call.options.maxTokens <= 4096);
+	assert.ok(call.options.signal instanceof AbortSignal);
+
+	answers.push('{"decision":"ask","reason":"deletes files"}');
+	res = await tool.execute("c2b", { action: "run", name: "w", task: "PERMISSION" }, undefined, undefined, ctx);
+	assert.match(res.content[0].text, /"optionId":"ro"/, "escalation without UI fails closed even though confirm would say yes");
+	answers.push("```json\n{}\n```");
+	res = await tool.execute("c2c", { action: "run", name: "w", task: "PERMISSION" }, undefined, undefined, ctx);
+	assert.match(res.content[0].text, /"optionId":"ro"/, "malformed review fails closed");
+
+	answers.push('{"decision":"ask","reason":"deletes files"}');
+	res = await tool.execute("c2d", { action: "run", name: "w", task: "PERMISSION" }, undefined, undefined, { ...ctx, hasUI: true, mode: "tui" });
+	assert.match(res.content[0].text, /"optionId":"ao"/, "escalation goes to the UI");
+	assert.match(confirms.at(-1), /Pi reviewer \(smoke-provider\/smoke-active-model\) escalated this to you: deletes files/);
+
+	const before = reviewCalls.length;
+	res = await tool.execute("c2e", { action: "run", name: "w", task: "PERMISSION" }, undefined, undefined, { ...ctx, model: undefined });
+	assert.match(res.content[0].text, /"optionId":"ro"/, "no active Pi model fails closed");
+	assert.equal(reviewCalls.length, before);
+
+	// Legacy ask policy (explicit env override, read when the manager for a new Pi session is created).
+	process.env.PI_CURSOR_PERMISSIONS = "ask";
+	const askCtx = { ...ctx, sessionManager: { getSessionId: () => "ext-smoke-ask" } };
+	res = await tool.execute("c2f", { action: "run", name: "w", task: "PERMISSION" }, undefined, undefined, askCtx);
+	assert.match(res.content[0].text, /"optionId":"ro"/, "legacy ask without UI fails closed");
+	assert.equal(reviewCalls.length, before, "legacy ask never calls the reviewer");
+	delete process.env.PI_CURSOR_PERMISSIONS;
+	res = await tool.execute("c2g", { action: "run", name: "w", task: "ECHO back" }, undefined, undefined, ctx);
+	assert.match(res.content[0].text, /back/);
 	res = await tool.execute("c3", { action: "list" }, undefined, undefined, ctx);
 	assert.match(res.content[0].text, /- w \[live\]/);
 	await assert.rejects(tool.execute("c4", { action: "run", name: "../w", task: "x" }, undefined, undefined, ctx), /Invalid worker name/);

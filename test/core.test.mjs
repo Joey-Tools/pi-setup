@@ -24,9 +24,13 @@ test("configFromEnv defaults and user-owned overrides", () => {
 	assert.deepEqual(c.args, ["acp"]);
 	assert.equal(c.stateDir, path.join("/tmp/agentdir", "cursor-workers"));
 	assert.deepEqual(c.profile, { model: "claude-opus-5-5", context: "1m", effort: "high", fast: "false" });
-	assert.equal(c.permissionPolicy, "ask");
+	assert.equal(c.permissionPolicy, "review");
+	assert.equal(c.reviewTimeoutMs, 45000);
 	assert.equal(c.maxWorkers, 4);
 	assert.equal(c.resultLimit, 12000);
+	for (const policy of ["ask", "allow", "deny", "REVIEW"]) assert.equal(configFromEnv({ PI_CURSOR_PERMISSIONS: policy }).permissionPolicy, policy.toLowerCase());
+	assert.equal(configFromEnv({ PI_CURSOR_REVIEW_TIMEOUT_SECONDS: "120" }).reviewTimeoutMs, 120000);
+	assert.throws(() => configFromEnv({ PI_CURSOR_REVIEW_TIMEOUT_SECONDS: "121" }), /PI_CURSOR_REVIEW_TIMEOUT_SECONDS/);
 
 	const o = configFromEnv({
 		PI_CURSOR_COMMAND: "/opt/cursor/agent",

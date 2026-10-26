@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { configFromEnv, WorkerManager } from "../lib/index.mjs";
+import { configFromEnv, createModelReviewer, WorkerError, WorkerManager } from "../lib/index.mjs";
 
 const Params = Type.Object(
 	{
@@ -29,7 +29,7 @@ type WorkerSummary = {
 
 function formatList(manager: WorkerManager, workers: WorkerSummary[]): string {
 	const lines = [
-		`Cursor workers (${manager.profileLabel}, permissions=${manager.opts.permissionPolicy}, max live ${manager.opts.maxWorkers})`,
+		`Cursor workers (${manager.profileLabel}, permissions=${manager.opts.permissionPolicy}${manager.opts.permissionPolicy === "review" ? " by the active Pi model" : ""}, max live ${manager.opts.maxWorkers})`,
 		`State: ${manager.registry.scopeDir}`,
 	];
 	if (!workers.length) lines.push("No workers in this Pi session yet.");
@@ -72,8 +72,9 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 			"action=run sends a task to the named worker: created on first use, it keeps its own conversation across runs and Pi restarts within this Pi session. " +
 			"action=list shows workers; action=close releases a worker process (its session stays resumable; forget:true drops the local record so the name starts fresh). " +
 			"The Cursor model profile (default claude-opus-5-5, 1M context, high effort, fast off) is set and verified before every prompt; it and the permission policy are user-configured and cannot be changed by tool arguments. " +
-			"The permission policy only gates actions Cursor asks about; reads, in-workspace edits, and user-allowlisted actions can run without asking, and no mode is a sandbox. " +
-			"stopReason=end_turn means the turn ended, not that the task succeeded. The returned text is capped; the full result and ACP event log paths are included. Cursor usage/cost is not included in Pi totals.",
+			"By default (permission policy review) your current Pi model reviews each permission request Cursor sends, seeing only the task and that request: it approves routine task-scoped actions once, denies clearly prohibited ones, and escalates risky or unclear ones to the user (rejected without a UI). " +
+			"The policy only gates actions Cursor asks about; reads, in-workspace edits, and user-allowlisted actions can run without asking, and no mode is a sandbox. " +
+			"stopReason=end_turn means the turn ended, not that the task succeeded. The returned text is capped; the full result and ACP event log paths are included. Permission-review model usage is reported with this tool result; Cursor usage/cost is not included in Pi totals.",
 		promptSnippet: "Delegate exploration, implementation, testing, and review to persistent named Cursor workers",
 		promptGuidelines: [
 			"Use cursor_worker to delegate expensive exploration, implementation, test runs, and code review to Cursor; keep planning, decisions, and the final synthesis yourself.",
@@ -103,24 +104,57 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 			if (!params.task) throw new Error("cursor_worker action=run requires task");
 			const name = params.name;
 			const askPermission = ctx.hasUI
-				? (req: { worker: string; cwd: string; title: string; message: string }, dialogSignal: AbortSignal) =>
-						ctx.ui.confirm(`Cursor worker "${req.worker}" requests permission`, `${req.message}\ncwd: ${req.cwd}\n\nAllow once?`, { signal: dialogSignal })
+				? (req: { worker: string; cwd: string; title: string; message: string; review?: { reason: string; model?: string } }, dialogSignal: AbortSignal) =>
+						ctx.ui.confirm(
+							`Cursor worker "${req.worker}" requests permission`,
+							`${req.review ? `Pi reviewer (${req.review.model ?? "unavailable"}) escalated this to you: ${req.review.reason}\n\n` : ""}${req.message}\ncwd: ${req.cwd}\n\nAllow once?`,
+							{ signal: dialogSignal },
+						)
 				: undefined;
-			const result = await m.run({
-				name,
-				task: params.task,
-				cwd: params.cwd,
-				mode: params.mode,
-				timeoutMs: params.timeoutSeconds ? params.timeoutSeconds * 1000 : undefined,
-				signal,
-				askPermission,
-				onProgress: (p: { elapsedMs: number; toolCalls: number; resultChars: number; permissionRequests: number }) =>
-					onUpdate?.({
-						content: [{ type: "text", text: `Cursor worker "${name}" running: ${Math.round(p.elapsedMs / 1000)}s, ${p.toolCalls} tool calls, ${p.resultChars} chars` }],
-						details: { action: "run", status: "running", ...p },
-					}),
-			});
-			return { content: [{ type: "text", text: result.text }], details: { action: "run", ...result.details } };
+			// One reviewer per run: the active Pi model, one direct request per permission, no tools and no conversation.
+			const reviewPermission =
+				m.opts.permissionPolicy === "review" && ctx.model
+					? createModelReviewer({
+							model: ctx.model,
+							streamSimple: (model: any, context: any, options: any) => ctx.modelRegistry.streamSimple(model, context, options),
+							thinkingLevel: pi.getThinkingLevel(),
+						})
+					: undefined;
+			let result;
+			try {
+				result = await m.run({
+					name,
+					task: params.task,
+					cwd: params.cwd,
+					mode: params.mode,
+					timeoutMs: params.timeoutSeconds ? params.timeoutSeconds * 1000 : undefined,
+					signal,
+					askPermission,
+					reviewPermission,
+					onProgress: (p: { elapsedMs: number; toolCalls: number; resultChars: number; permissionReviews: number }) =>
+						onUpdate?.({
+							content: [
+								{
+									type: "text",
+									text: `Cursor worker "${name}" running: ${Math.round(p.elapsedMs / 1000)}s, ${p.toolCalls} tool calls, ${p.resultChars} chars${p.permissionReviews ? `, ${p.permissionReviews} permission reviews` : ""}`,
+								},
+							],
+							details: { action: "run", status: "running", ...p },
+						}),
+				});
+			} catch (err) {
+				// Keep the reviewer's usage in Pi's totals even when the run fails.
+				const failure = err instanceof WorkerError ? (err.details as { usage?: any; counts?: Record<string, number> } | undefined) : undefined;
+				const usage = failure?.usage;
+				if (!usage) throw err;
+				return {
+					content: [{ type: "text", text: (err as Error).message }],
+					details: { action: "run", status: "failed", name, counts: failure?.counts },
+					usage,
+					isError: true,
+				};
+			}
+			return { content: [{ type: "text", text: result.text }], details: { action: "run", ...result.details }, usage: result.usage };
 		},
 	});
 

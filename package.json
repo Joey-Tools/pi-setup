@@ -1,16 +1,17 @@
 {
 	"name": "pi-cursor-workers",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Pi package: delegate exploration, implementation, tests, and review to persistent named Cursor agents over ACP",
 	"type": "module",
 	"keywords": ["pi-package"],
 	"engines": {
 		"node": ">=22.19"
 	},
-	"files": ["extensions", "lib", "skills", "prompts", "README.md"],
+	"files": ["extensions", "lib", "skills", "prompts", "scripts/configure-cursor.mjs", "README.md"],
 	"scripts": {
 		"test": "node --test test/*.test.mjs",
 		"check": "node scripts/check.mjs",
+		"configure:cursor": "node scripts/configure-cursor.mjs",
 		"smoke:extension": "node scripts/extension-smoke.mjs",
 		"smoke:live": "node scripts/live-smoke.mjs"
 	},

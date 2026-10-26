@@ -361,21 +361,29 @@ test("cursor/ask_question is declined, so Cursor never falls back to answer-as-p
 	assert.match(res.text, /question=\{"outcome":\{"outcome":"cancelled"\}\}/);
 });
 
-test("question-shaped or ambiguous permission requests are cancelled under every policy without asking", async (t) => {
+test("question-shaped or ambiguous permission requests are cancelled under every policy without asking or reviewing", async (t) => {
 	const env = setup(t);
 	let asked = 0;
+	let reviewed = 0;
 	const ask = async () => {
 		asked++;
 		return true;
 	};
-	for (const policy of ["allow", "ask"]) {
+	const reviewPermission = async () => {
+		reviewed++;
+		return { decision: "approve", reason: "fine" };
+	};
+	for (const policy of ["review", "allow", "ask", "deny"]) {
 		const m = env.manager({ permissionPolicy: policy });
 		for (const task of ["QUESTION_FALLBACK", "MULTI_ALLOW"]) {
-			const res = await m.run({ name: `w-${policy}`, task, askPermission: ask });
+			const res = await m.run({ name: `w-${policy}`, task, askPermission: ask, reviewPermission });
 			assert.match(res.text, /permission=\{"outcome":"cancelled"\}/, `${policy} ${task}`);
 		}
+		const res = await m.run({ name: `w-${policy}`, task: "ASK_QUESTION", askPermission: ask, reviewPermission });
+		assert.match(res.text, /question=\{"outcome":\{"outcome":"cancelled"\}\}/, `${policy} ASK_QUESTION`);
 	}
 	assert.equal(asked, 0);
+	assert.equal(reviewed, 0);
 });
 
 test("Cursor in-band errors with end_turn fail; a trailing error paragraph is flagged", async (t) => {
