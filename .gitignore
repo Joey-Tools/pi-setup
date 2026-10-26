@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+# Local runtime state (only if PI_CURSOR_STATE_DIR points inside the repo)
+.pi-cursor-state/
+.pi/
+*.tmp
