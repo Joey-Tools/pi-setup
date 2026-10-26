@@ -127,6 +127,44 @@ async function prompt(s, text) {
 			out(`permission=${JSON.stringify(res.result?.outcome ?? res.error)}`);
 			break;
 		}
+		case "PERMISSION_TOOL":
+		case "PERMISSION_BIG": {
+			// PERMISSION_TOOL <toolCall JSON or array of them> [-- free text]: sent one after another; PERMISSION_BIG <n>: one n-char diff.
+			const calls =
+				cmd === "PERMISSION_BIG"
+					? [{ title: "Edit big.txt", kind: "edit", content: [{ type: "diff", path: "big.txt", oldText: "", newText: "B".repeat(Number(arg)) }] }]
+					: [].concat(JSON.parse(arg.split(" -- ")[0]));
+			const outcomes = [];
+			for (const [i, tc] of calls.entries()) {
+				const res = await requestClient("session/request_permission", {
+					sessionId: s.id,
+					toolCall: { toolCallId: `pt${i}`, ...tc },
+					options: [
+						{ optionId: "aa", name: "Always", kind: "allow_always" },
+						{ optionId: "ao", name: "Once", kind: "allow_once" },
+						{ optionId: "ro", name: "Reject", kind: "reject_once" },
+					],
+				});
+				outcomes.push(JSON.stringify(res.result?.outcome ?? res.error));
+			}
+			out(`permission=${outcomes.join(" ")}`);
+			break;
+		}
+		case "PERM_NOWAIT": {
+			// One awaited request, then one the agent never awaits before ending its turn; the late answer is logged.
+			const request = (id) => ({
+				sessionId: s.id,
+				toolCall: { toolCallId: id, title: "npm test", kind: "execute", rawInput: { command: "npm test" } },
+				options: [
+					{ optionId: "ao", name: "Once", kind: "allow_once" },
+					{ optionId: "ro", name: "Reject", kind: "reject_once" },
+				],
+			});
+			const first = await requestClient("session/request_permission", request("nw1"));
+			requestClient("session/request_permission", request("nw2")).then((res) => log({ event: "late_permission", outcome: res.result?.outcome ?? res.error }));
+			out(`first=${JSON.stringify(first.result?.outcome)}`);
+			break;
+		}
 		case "ASK_QUESTION": {
 			// Mirrors Cursor: an error reply to cursor/ask_question falls back to a permission request offering the answers.
 			const res = await requestClient("cursor/ask_question", { sessionId: s.id, toolCallId: "tc9", questions: [{ question: "Delete the database?", options: ["yes", "no"] }] });
