@@ -35,7 +35,9 @@ Every task must be self-contained: goal, relevant paths, constraints, acceptance
 ## Limitations
 
 - `ask`/`plan` modes are behavioral, not an OS sandbox. The permission policy only gates actions Cursor asks about; reads, in-workspace edits, and allowlisted commands can run without asking.
-- By default (`review`), your current Pi model reviews each permission request Cursor sends, seeing only the task and that request. It approves routine task-scoped actions once and escalates risky or unclear ones to the user (rejected without a UI). The run result reports review counts and the event log path. If a worker reports a rejected command it needed, ask the user instead of re-sending the task to get around the review.
+- By default (`review`, profile `task`), your current Pi model decides each permission request Cursor sends, seeing the task, that request, and the user's recent messages. It approves normal task-scoped development work once (tests, builds, running project code for validation, project edits, work in the run's private scratch directory, git operations the user explicitly asked for) and blocks risky or unclear ones; an uncertain answer gets one automatic second opinion. No permission dialog is shown. Each run's scratch directory is created by Pi, named in the worker's preamble, and kept after the run.
+- When a run reports blocked requests, do not ask the user for permission and do not re-send the task, or a reworded one, to get around the block. Report the blocker with its decision ids, use a legitimately different approach if there is one, and mention that the user can review decisions and add exact rules with `/approvals`. Nothing is replayed after a rule change; resume the work only when the user asks.
+- Setup, sign-in, or keychain failures are errors to report, not something to work around with login or password prompts.
 - Each review is an extra Pi model call; its usage is included in the `cursor_worker` result.
 - Setting the profile also changes the user's interactive Cursor CLI default model.
 - Cursor usage and cost are not included in Pi's totals.
