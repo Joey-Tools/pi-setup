@@ -75,7 +75,8 @@ async function prompt(s, text) {
 	const task = /<task>\n([\s\S]*)\n<\/task>/.exec(text)?.[1] ?? text;
 	const stored = loadSession(s.id);
 	const c = current(s);
-	log({ method: "session/prompt", task, config: c, mode: s.mode, preamble: text.includes("concise handoff") });
+	const scratch = /^- Run scratch directory[^:]*: (.+)$/m.exec(text)?.[1];
+	log({ method: "session/prompt", task, config: c, mode: s.mode, preamble: text.includes("concise handoff"), scratch });
 	if (cfg.requireProfile !== false && (c.model !== "claude-opus-5-5" || c.context !== "1m" || !["high", "xhigh", "max"].includes(c.effort) || c.fast !== "false")) {
 		throw Object.assign(new Error(`profile not applied: ${JSON.stringify(c)}`), { code: -32000 });
 	}
@@ -129,11 +130,12 @@ async function prompt(s, text) {
 		}
 		case "PERMISSION_TOOL":
 		case "PERMISSION_BIG": {
-			// PERMISSION_TOOL <toolCall JSON or array of them> [-- free text]: sent one after another; PERMISSION_BIG <n>: one n-char diff.
+			// PERMISSION_TOOL <toolCall JSON or array of them> [-- free text]: sent one after another, with {SCRATCH} replaced by
+			// the scratch path from this prompt's preamble; PERMISSION_BIG <n>: one n-char diff.
 			const calls =
 				cmd === "PERMISSION_BIG"
 					? [{ title: "Edit big.txt", kind: "edit", content: [{ type: "diff", path: "big.txt", oldText: "", newText: "B".repeat(Number(arg)) }] }]
-					: [].concat(JSON.parse(arg.split(" -- ")[0]));
+					: [].concat(JSON.parse(arg.split(" -- ")[0].replaceAll("{SCRATCH}", scratch ?? "{SCRATCH}")));
 			const outcomes = [];
 			for (const [i, tc] of calls.entries()) {
 				const res = await requestClient("session/request_permission", {
@@ -146,8 +148,32 @@ async function prompt(s, text) {
 					],
 				});
 				outcomes.push(JSON.stringify(res.result?.outcome ?? res.error));
+				// Like Cursor, report the call "completed" whatever the permission answer was.
+				update(s.id, { sessionUpdate: "tool_call_update", toolCallId: `pt${i}`, status: "completed" });
 			}
 			out(`permission=${outcomes.join(" ")}`);
+			break;
+		}
+		case "OBSERVE": {
+			// OBSERVE <n>: n tool calls Cursor runs natively without asking for permission.
+			for (let i = 0; i < Number(arg || 1); i++) {
+				update(s.id, { sessionUpdate: "tool_call", toolCallId: `nat${i}`, title: `Edit file ${i}`, kind: "edit", status: "pending", rawInput: { path: `src/f${i}.js` } });
+				update(s.id, { sessionUpdate: "tool_call_update", toolCallId: `nat${i}`, status: "completed" });
+			}
+			out("observed done");
+			break;
+		}
+		case "PERMISSION_SCRATCH": {
+			// Uses the scratch path from this prompt's preamble, as a worker following the preamble would.
+			const res = await requestClient("session/request_permission", {
+				sessionId: s.id,
+				toolCall: { toolCallId: "ps1", title: "Back up app.js", kind: "execute", rawInput: { command: `cp src/app.js ${scratch}/app.js.bak` } },
+				options: [
+					{ optionId: "ao", name: "Once", kind: "allow_once" },
+					{ optionId: "ro", name: "Reject", kind: "reject_once" },
+				],
+			});
+			out(`scratch=${scratch} permission=${JSON.stringify(res.result?.outcome)}`);
 			break;
 		}
 		case "PERM_NOWAIT": {
@@ -162,6 +188,12 @@ async function prompt(s, text) {
 			});
 			const first = await requestClient("session/request_permission", request("nw1"));
 			requestClient("session/request_permission", request("nw2")).then((res) => log({ event: "late_permission", outcome: res.result?.outcome ?? res.error }));
+			// Test-only: with cfg.nowaitBarrier, end the turn only once the client has created that marker file.
+			if (cfg.nowaitBarrier) {
+				const deadline = Date.now() + 10000;
+				while (!fs.existsSync(cfg.nowaitBarrier) && Date.now() < deadline) await sleep(5);
+				log({ event: "nowait_barrier", released: fs.existsSync(cfg.nowaitBarrier) });
+			}
 			out(`first=${JSON.stringify(first.result?.outcome)}`);
 			break;
 		}

@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { configFromEnv, createModelReviewer, WorkerError, WorkerManager } from "../lib/index.mjs";
+import { configFromEnv, createModelReviewer, userMessagesFromBranch, WorkerError, WorkerManager } from "../lib/index.mjs";
 
 const Params = Type.Object(
 	{
@@ -29,8 +29,9 @@ type WorkerSummary = {
 
 function formatList(manager: WorkerManager, workers: WorkerSummary[]): string {
 	const lines = [
-		`Cursor workers (${manager.profileLabel}, permissions=${manager.opts.permissionPolicy}${manager.opts.permissionPolicy === "review" ? " by the active Pi model" : ""}, max live ${manager.opts.maxWorkers})`,
+		`Cursor workers (${manager.profileLabel}, permissions=${manager.opts.permissionPolicy}${manager.opts.permissionPolicy === "review" ? ` by the active Pi model, review profile ${manager.opts.reviewProfile}, no dialogs` : ""}, max live ${manager.opts.maxWorkers})`,
 		`State: ${manager.registry.scopeDir}`,
+		`Decision history: ${manager.approvals.dir} (/approvals)`,
 	];
 	if (!workers.length) lines.push("No workers in this Pi session yet.");
 	for (const w of workers) {
@@ -72,8 +73,9 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 			"action=run sends a task to the named worker: created on first use, it keeps its own conversation across runs and Pi restarts within this Pi session. " +
 			"action=list shows workers; action=close releases a worker process (its session stays resumable; forget:true drops the local record so the name starts fresh). " +
 			"The Cursor model profile (default claude-opus-5-5, 1M context, high effort, fast off) is set and verified before every prompt; it and the permission policy are user-configured and cannot be changed by tool arguments. " +
-			"By default (permission policy review) your current Pi model reviews each permission request Cursor sends, seeing only the task and that request: it approves routine task-scoped actions once, denies clearly prohibited ones, and escalates risky or unclear ones to the user (rejected without a UI). " +
-			"The policy only gates actions Cursor asks about; reads, in-workspace edits, and user-allowlisted actions can run without asking, and no mode is a sandbox. " +
+			"By default (permission policy review, review profile task) your current Pi model decides each permission request Cursor sends, seeing the task, that request, and the user's recent messages: it approves normal task-scoped development work once (tests, builds, running project code for validation, project edits, work inside the run's private scratch directory, and git operations the user explicitly asked for), and blocks everything else. An uncertain first answer gets at most one automatic second opinion. No permission dialog is ever shown under review; blocked requests are recorded with decision ids, and only the user can add exact allow or block rules later with /approvals. The user can choose the stricter conservative profile. " +
+			"Each run gets a private scratch directory that Pi creates and tells the worker about; it is kept after the run. " +
+			"The policy only gates actions Cursor asks about; reads, in-workspace edits, and user-allowlisted actions can run without asking (recorded as Cursor-observed, not Pi-reviewed), and no mode is a sandbox. " +
 			"stopReason=end_turn means the turn ended, not that the task succeeded. The returned text is capped; the full result and ACP event log paths are included. Permission-review model usage is reported with this tool result; Cursor usage/cost is not included in Pi totals.",
 		promptSnippet: "Delegate exploration, implementation, testing, and review to persistent named Cursor workers",
 		promptGuidelines: [
@@ -82,6 +84,7 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 			"Reuse a cursor_worker name for follow-ups on the same thread of work; use distinct names (scout, impl, review) for independent work, which may run in parallel.",
 			"Never run two writing cursor_workers on the same checkout at once: give each concurrent writer its own git worktree via cwd. Use mode ask or plan for read-only scouting and review.",
 			"A finished cursor_worker run (end_turn) does not prove success: check its reply, diffs, and test output before reporting claims as facts; if a run fails or is cancelled, do not assume its changes are complete.",
+			"When cursor_worker reports blocked permission requests, do not ask the user for permission and do not re-send the same work to get around the block: report the blocker with its decision ids, try a legitimately different approach if one exists, and mention that the user can review it with /approvals.",
 		],
 		parameters: Params,
 
@@ -103,14 +106,14 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 			}
 			if (!params.task) throw new Error("cursor_worker action=run requires task");
 			const name = params.name;
-			const askPermission = ctx.hasUI
-				? (req: { worker: string; cwd: string; title: string; message: string; review?: { reason: string; model?: string } }, dialogSignal: AbortSignal) =>
-						ctx.ui.confirm(
-							`Cursor worker "${req.worker}" requests permission`,
-							`${req.review ? `Pi reviewer (${req.review.model ?? "unavailable"}) escalated this to you: ${req.review.reason}\n\n` : ""}${req.message}\ncwd: ${req.cwd}\n\nAllow once?`,
-							{ signal: dialogSignal },
-						)
-				: undefined;
+			// Dialogs exist only for the explicit PI_CURSOR_PERMISSIONS=ask opt-in; review never shows one.
+			const askPermission =
+				m.opts.permissionPolicy === "ask" && ctx.hasUI
+					? (req: { worker: string; cwd: string; title: string; message: string }, dialogSignal: AbortSignal) =>
+							ctx.ui.confirm(`Cursor worker "${req.worker}" requests permission`, `${req.message}\ncwd: ${req.cwd}\n\nAllow once?`, { signal: dialogSignal })
+					: undefined;
+			// The user's own recent messages from this session branch, read here; never taken from tool arguments.
+			const userContext = m.opts.permissionPolicy === "review" ? userMessagesFromBranch(ctx.sessionManager.getBranch()) : undefined;
 			// One reviewer per run: the active Pi model, one direct request per permission, no tools and no conversation.
 			const reviewPermission =
 				m.opts.permissionPolicy === "review" && ctx.model
@@ -131,6 +134,7 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 					signal,
 					askPermission,
 					reviewPermission,
+					userContext,
 					onProgress: (p: { elapsedMs: number; toolCalls: number; resultChars: number; permissionReviews: number }) =>
 						onUpdate?.({
 							content: [

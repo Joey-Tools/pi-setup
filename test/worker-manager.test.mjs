@@ -230,7 +230,7 @@ test("large results are capped for the model with the full text in result.md", a
 	const full = fs.readFileSync(res.details.resultPath, "utf8");
 	assert.equal(full.length, 5000);
 	assert.ok(full.endsWith("END"));
-	assert.ok(JSON.stringify(res.details).length < 1000, "details stay lightweight");
+	assert.ok(JSON.stringify(res.details).length < 1400, "details stay lightweight");
 });
 
 test("non-end_turn stop reasons are failures", async (t) => {
