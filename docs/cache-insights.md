@@ -98,7 +98,8 @@ This is the approximate **input-only** cost of the next request. Response genera
 
 | In Pi | CLI (`node scripts/cache-insights.mjs …`) | Writes |
 |---|---|---|
-| `/cache` or `/cache status` | `status` | no |
+| `/cache` or `/cache menu` (TUI: interactive menu; elsewhere: status text) | | only through the actions below |
+| `/cache status` | `status` | no |
 | `/cache history [1-200]` | | no |
 | `/cache learn [provider/model]` | `learn [--model provider/model]` | no |
 | `/cache seed <provider/model> <hit> <expire>` | `seed <provider/model> <hit> <expire>` | profile |
@@ -110,6 +111,22 @@ This is the approximate **input-only** cost of the next request. Response genera
 - **Validation first:** every command, argument, flag, and value is validated before anything is opened or created. Unknown commands, flags used with the wrong command, repeated single-value flags, empty or non-decimal minutes, and invalid settings are rejected, and no directory or database is created. The CLI exits 2 for these.
 - **Import targets:** without explicit models, import uses the models that have a seeded profile. With neither, it fails with `no_targets` and creates nothing. There are no built-in default models. In Pi, those profiles are read without upgrading anything; an older database reports `migration_required`, and nothing is upgraded or written until you confirm an import.
 - **In Pi:** write commands work only in the interactive TUI, and `seed` and `import` show a confirmation. In `print`, `json`, and `rpc` modes, write commands change nothing. There are no model-callable tools.
+
+**Interactive menu (TUI).** Bare `/cache` and `/cache menu` open a looping menu built only on Pi's `ctx.ui.select`, `input`, `confirm`, and `editor`. Its title summarizes the active model, recording state, and display settings. The entries are:
+
+- **Status and forecast:** opens the full status in a read-only view.
+- **Display settings:** a picker for times (local or UTC) and cost (off, USD, GitHub credits, or both). `/cache settings` with no arguments opens this submenu directly.
+- **Recording:** shows the current state and toggles it.
+- **Seed or edit a model profile:** offers the current model, seeded profiles, or a typed `provider/model`. It then asks for the hit and expire minutes. When a profile exists, an empty entry keeps its shown value; for a new profile, an empty entry or Esc cancels. Values are validated like `seed`, and nothing is written until the usual confirmation.
+- **Import session metadata:** offers all seeded models, the current model, or typed models. Profiles are read without creating or upgrading the database, and the usual metadata-only confirmation comes before anything is written.
+- **Learning candidates:** for all models, the current model, a seeded model, or a typed one.
+- **Recent history:** 20, 50, 100, 200, or a typed 1–200.
+- **Upgrade the database:** asks for confirmation first.
+- **Close.**
+
+Typed models for a profile or learning view must be exactly one `provider/model`; only import accepts several. When the database needs an upgrade (`migration_required`), or cannot be used, the title shows "upgrade needed" or the error and "settings unknown", never invented defaults. Every data action (settings, recording, profile, import, learning, history) then explains the situation and returns to the menu without acting. "Upgrade the database (needed)" is the only way forward, and it asks before upgrading. Every write reuses the validated actions of the direct commands. Status, history, and learning open in Pi's editor titled "… (read-only; edits are ignored)". Whatever is returned is discarded; without an editor, the text is shown as a notification. Back or Esc returns to the previous menu without changes, and an answer that was not offered counts as cancel. Only one menu runs at a time.
+
+Session start, shutdown, reload, and `/tree` close the menu. Its pending dialogs receive an abort signal, and any answer that still arrives later is ignored, so it cannot write or reopen the menu. Cancelling never creates a database or reports a storage error. Outside the TUI, or when `ctx.ui.select` is unavailable, bare `/cache` and `/cache settings` show read-only text and open no dialogs. The menu creates no timers or other resources.
 - **CLI options:** `--agent-dir DIR` (default `PI_CODING_AGENT_DIR` or `~/.pi/agent`), `--root DIR` (the cache-insights dir), and `--json`. The CLI writes only the feature's database, and only for write commands. `recording off`, `status`, `learn`, `settings` without flags, and `migrate` never create a database. Exit codes: 0 success, 1 error (a fixed code and message, never paths or raw error text), 2 usage.
 
 ## Storage

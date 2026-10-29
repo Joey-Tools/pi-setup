@@ -124,10 +124,25 @@ export function cli(env, args, { json = true } = {}) {
  * Loads the extension through its public registration with a mocked Pi API and context. `pi` throws on any
  * call that could send a model request or change Pi state; the model registry has no usable methods.
  */
-export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || mode === "rpc", model = { ...SOL }, branch = [], confirm = true, thinking = "high", loadSqlite, baseline = { status: "unchanged" } } = {}) {
+export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || mode === "rpc", model = { ...SOL }, branch = [], confirm = true, thinking = "high", loadSqlite, baseline = { status: "unchanged" }, menuUI = true } = {}) {
 	const clock = { w: T0, m: 1_000_000 };
 	// `baseline` is the injected startup/resume configuration check: an object result, or a function (ctx, pi) => result.
 	const h = { env, clock, branch, notes: [], statuses: [], confirms: [], uiErrors: [], timers: new Set(), baseline, baselineCalls: 0 };
+	// Scripted dialogs: answers are shifted from h.queue[kind]; a string, a RegExp matched against the offered choices,
+	// or { defer: true } for a promise resolved later through h.pending. An empty queue answers undefined (Esc).
+	Object.assign(h, { queue: { select: [], input: [], confirm: [], editor: [] }, pending: [], selects: [], inputs: [], editors: [] });
+	h.script = ({ select = [], input = [], confirm: c = [], editor = [] } = {}) => {
+		h.queue.editor.push(...editor);
+		h.queue.select.push(...select);
+		h.queue.input.push(...input);
+		h.queue.confirm.push(...c);
+	};
+	const answer = (kind, choices) => {
+		const a = h.queue[kind].shift();
+		if (a && typeof a === "object" && a.defer) return new Promise((resolve) => h.pending.push({ kind, resolve }));
+		if (a instanceof RegExp) return choices?.find((c) => a.test(c));
+		return a;
+	};
 	const handlers = new Map();
 	const commands = new Map();
 	const forbidden = (name) => () => {
@@ -150,9 +165,26 @@ export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || 
 		},
 		confirm: async (title, message) => {
 			h.confirms.push([title, message]);
-			return confirm;
+			return h.queue.confirm.length ? answer("confirm") : confirm;
 		},
 	};
+	if (menuUI) {
+		ui.select = async (title, choices, opts) => {
+			if (mode !== "tui") h.uiErrors.push(`select in ${mode}`);
+			h.selects.push({ title, choices, signal: opts?.signal });
+			return answer("select", choices);
+		};
+		ui.input = async (title, placeholder, opts) => {
+			if (mode !== "tui") h.uiErrors.push(`input in ${mode}`);
+			h.inputs.push({ title, placeholder, signal: opts?.signal });
+			return answer("input");
+		};
+		ui.editor = async (title, text) => {
+			if (mode !== "tui") h.uiErrors.push(`editor in ${mode}`);
+			h.editors.push({ title, text });
+			return h.queue.editor.length ? answer("editor") : `${text}\nEDITED BY USER`;
+		};
+	}
 	h.ctx = {
 		mode,
 		hasUI,

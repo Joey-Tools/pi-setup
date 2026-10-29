@@ -500,6 +500,42 @@ async function cacheSmoke(result, cursorExt) {
 	assert.match(resumedStatus(), /^uncertain · previous request failed/);
 	await resumed.runner.emit({ type: "session_shutdown", reason: "quit" });
 	assert.deepEqual(resumed.errors, [], JSON.stringify(resumed.errors));
+
+	// Interactive /cache menu through the real runner and the public command, with scripted ui.select/input/editor.
+	const menuRun = stubRunner(result, pi.SessionManager.inMemory(project), "cache-menu", model);
+	const answers = ["Display settings", /^Times:/, "Local time", /^Cost:/, "USD and GitHub credits", "Back", "Status and forecast", "Close"];
+	const offered = [];
+	const views = [];
+	const menuStatuses = [];
+	menuRun.runner.setUIContext(
+		{
+			setWidget: () => {},
+			setStatus: (key, text) => menuStatuses.push([key, text]),
+			notify: (msg, level) => notes.push([level, msg]),
+			confirm: async () => false,
+			select: async (title, choices) => {
+				offered.push([title, choices]);
+				const a = answers.shift();
+				return a instanceof RegExp ? choices.find((c) => a.test(c)) : a;
+			},
+			input: async () => undefined,
+			editor: async (title, text) => (views.push([title, text]), `${text}\nedited`),
+		},
+		"tui",
+	);
+	await menuRun.runner.emit({ type: "session_start", reason: "startup" });
+	const live = { ...message, timestamp: Date.now() - 5 };
+	await menuRun.runner.emit({ type: "message_start", message: { ...live, content: [] } });
+	await menuRun.runner.emitMessageEnd({ type: "message_end", message: live });
+	await menuRun.runner.getCommand("cache").handler("", menuRun.runner.createContext());
+	assert.match(offered[0][0], /^Cache insights · github-copilot\/gpt-6\.1-sol · recording (on|off) · time utc · cost usd$/);
+	assert.ok(offered[0][1].includes("Display settings") && offered[0][1].at(-1) === "Close");
+	assert.equal(answers.length, 0, "every scripted choice was offered and used");
+	assert.match(cli("settings"), /time local, cost both/, "the menu saved the settings through the real runner");
+	assert.equal(views[0][0], "Cache status (read-only; edits are ignored)");
+	assert.match(menuStatuses.filter(([key]) => key === "cache-insights").at(-1)[1], /^cache hit · until \d\d:\d\d · miss ≈\$0\.021 \(2\.1 cr\)$/);
+	await menuRun.runner.emit({ type: "session_shutdown", reason: "quit" });
+	assert.deepEqual(menuRun.errors, [], JSON.stringify(menuRun.errors));
 	assert.ok(!fs.readFileSync(dbPath).toString("latin1").includes(secret), "metadata only");
 	assert.ok(!notes.some(([, msg]) => msg.includes(secret)));
 	assert.deepEqual(errors, [], JSON.stringify(errors));
