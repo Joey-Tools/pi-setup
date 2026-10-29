@@ -300,10 +300,12 @@ test("high-risk task-profile requests stay untrusted data and every unresolved r
 });
 
 test("no machine-specific paths are hard-coded in the core or extensions", () => {
-	const files = [
-		...fs.readdirSync(path.join(root, "lib")).map((f) => path.join(root, "lib", f)),
-		...fs.readdirSync(path.join(root, "extensions")).map((f) => path.join(root, "extensions", f)),
-	];
+	const files = ["lib", "extensions"].flatMap((dir) =>
+		fs
+			.readdirSync(path.join(root, dir), { recursive: true, withFileTypes: true })
+			.filter((e) => e.isFile())
+			.map((e) => path.join(e.parentPath, e.name)),
+	);
 	for (const f of files) {
 		const text = fs.readFileSync(f, "utf8");
 		assert.doesNotMatch(text, /\/Users\/|\/home\/[a-z]|\/private\/var\/folders|C:\\\\Users/, f);

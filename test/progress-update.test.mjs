@@ -76,7 +76,7 @@ const updatesIn = (widget) => (widget ?? []).filter((line) => line.startsWith("â
 
 test("manifest auto-loads the progress extension alongside the Cursor bridge", () => {
 	const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-	assert.deepEqual(manifest.pi.extensions, ["./extensions/cursor.ts", "./extensions/progress-update.ts", "./extensions/approval-history.ts"]);
+	assert.deepEqual(manifest.pi.extensions, ["./extensions/cursor.ts", "./extensions/progress-update.ts", "./extensions/approval-history.ts", "./extensions/cache-insights/index.ts"]);
 	for (const ext of manifest.pi.extensions) assert.ok(fs.existsSync(path.join(root, ext)), ext);
 	assert.ok(manifest.files.includes("extensions"));
 	const source = fs.readFileSync(path.join(root, "extensions", "progress-update.ts"), "utf8");
