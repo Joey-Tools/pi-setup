@@ -124,7 +124,7 @@ export function cli(env, args, { json = true } = {}) {
  * Loads the extension through its public registration with a mocked Pi API and context. `pi` throws on any
  * call that could send a model request or change Pi state; the model registry has no usable methods.
  */
-export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || mode === "rpc", model = { ...SOL }, branch = [], confirm = true, thinking = "high", loadSqlite, baseline = { status: "unchanged" }, menuUI = true } = {}) {
+export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || mode === "rpc", model = { ...SOL }, branch = [], confirm = true, thinking = "high", loadSqlite, baseline = { status: "unchanged" }, menuUI = true, theme } = {}) {
 	const clock = { w: T0, m: 1_000_000 };
 	// `baseline` is the injected startup/resume configuration check: an object result, or a function (ctx, pi) => result.
 	const h = { env, clock, branch, notes: [], statuses: [], confirms: [], uiErrors: [], timers: new Set(), baseline, baselineCalls: 0 };
@@ -168,6 +168,7 @@ export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || 
 			return h.queue.confirm.length ? answer("confirm") : confirm;
 		},
 	};
+	if (theme) ui.theme = theme;
 	if (menuUI) {
 		ui.select = async (title, choices, opts) => {
 			if (mode !== "tui") h.uiErrors.push(`select in ${mode}`);

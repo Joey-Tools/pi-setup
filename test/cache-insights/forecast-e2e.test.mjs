@@ -29,16 +29,16 @@ test("startup recovers the anchor from the current branch and applies both clock
 
 	const h = loadExtension(t, env, { branch: s.branch() });
 	await h.emit("session_start", { reason: "startup" });
-	assert.equal(h.status(), "cache hit · until 12:15Z");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC");
 	await h.emit("model_select", { model: { provider: SOL.provider, id: SOL.model }, source: "restore" });
-	assert.equal(h.status(), "cache hit · until 12:15Z", "a startup model restore without a previous model is not a change");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC", "a startup model restore without a previous model is not a change");
 	h.at(T0 + 15 * MIN - 1);
-	assert.equal(await h.tick(), "cache hit · until 12:15Z");
+	assert.equal(await h.tick(), "cache hit · until 12:15 UTC");
 	h.at(T0 + 15 * MIN);
 	// The minute timer is not due 1 ms later; the edge-aligned refresh changes the label exactly at the boundary.
-	assert.equal(await h.tick(), "uncertain · expired after 12:21Z", "exactly 25 min since request start is uncertain");
+	assert.equal(await h.tick(), "uncertain · expired after 12:21 UTC", "exactly 25 min since request start is uncertain");
 	h.at(T0 + 21 * MIN);
-	assert.equal(await h.tick(), "uncertain · expired after 12:21Z", "exactly 30 min since response end is uncertain");
+	assert.equal(await h.tick(), "uncertain · expired after 12:21 UTC", "exactly 30 min since response end is uncertain");
 	h.at(T0 + 21 * MIN + 1);
 	assert.equal(await h.tick(), "cache expired");
 
@@ -147,7 +147,7 @@ test("branch boundaries after a recovered anchor, forks, and new sessions are un
 		},
 	});
 	for (const [reason, expected] of [
-		["resume", "cache hit · until 12:15Z"],
+		["resume", "cache hit · until 12:15 UTC"],
 		["reload", "uncertain · extension reloaded"],
 		["fork", "uncertain · forked session"],
 		["new", "uncertain · new session"],
@@ -189,27 +189,27 @@ test("approximate input cost ranges: units, host pricing tiers, cache-write pric
 	};
 	const flat = { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 0 };
 	// Anchor usage: 200 input + 10,000 cache read; next prompt ≈ 10,300 tokens (anchor prompt + its 100 output).
-	assert.equal((await status(flat, "usd")).status(), "cache hit · until 12:15Z · miss ≈$0.021");
-	assert.equal((await status(flat, "credits")).status(), "cache hit · until 12:15Z · miss ≈2.1 cr");
-	assert.equal((await status(flat, "both")).status(), "cache hit · until 12:15Z · miss ≈$0.021 (2.1 cr)");
-	assert.equal((await status(flat, "off")).status(), "cache hit · until 12:15Z");
-	assert.equal((await status({ ...flat, cacheWrite: 2.5 }, "usd")).status(), "cache hit · until 12:15Z · miss ≈$0.021–$0.026");
-	assert.equal((await status(flat, "usd", { getContextUsage: () => ({ tokens: 50_000 }) })).status(), "cache hit · until 12:15Z · miss ≈$0.100");
+	assert.equal((await status(flat, "usd")).status(), "cache hit · until 12:15 UTC · miss ≈$0.021");
+	assert.equal((await status(flat, "credits")).status(), "cache hit · until 12:15 UTC · miss ≈2.1 cr");
+	assert.equal((await status(flat, "both")).status(), "cache hit · until 12:15 UTC · miss ≈$0.021 (2.1 cr)");
+	assert.equal((await status(flat, "off")).status(), "cache hit · until 12:15 UTC");
+	assert.equal((await status({ ...flat, cacheWrite: 2.5 }, "usd")).status(), "cache hit · until 12:15 UTC · miss ≈$0.021–$0.026");
+	assert.equal((await status(flat, "usd", { getContextUsage: () => ({ tokens: 50_000 }) })).status(), "cache hit · until 12:15 UTC · miss ≈$0.100");
 
 	// Pi's host shape: tiers replace all prices for prompts above inputTokensAbove.
 	const tiered = { input: 2, output: 8, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 16, cacheRead: 0.2, cacheWrite: 5 }] };
 	const ctxTokens = (tokens) => ({ getContextUsage: () => ({ tokens }) });
-	assert.equal((await status(tiered, "usd", ctxTokens(200_000))).status(), "cache hit · until 12:15Z · miss ≈$0.400–$0.500");
-	assert.equal((await status(tiered, "usd", ctxTokens(272_000))).status(), "cache hit · until 12:15Z · miss ≈$0.544–$0.680", "the tier starts strictly above its threshold");
-	assert.equal((await status(tiered, "usd", ctxTokens(300_000))).status(), "cache hit · until 12:15Z · miss ≈$1.20–$1.50");
-	assert.equal((await status({ ...flat, tiers: [{ above: 10_000, input: 4 }] }, "usd")).status(), "cache hit · until 12:15Z", "an unrecognized tier shape is unknown, not guessed");
+	assert.equal((await status(tiered, "usd", ctxTokens(200_000))).status(), "cache hit · until 12:15 UTC · miss ≈$0.400–$0.500");
+	assert.equal((await status(tiered, "usd", ctxTokens(272_000))).status(), "cache hit · until 12:15 UTC · miss ≈$0.544–$0.680", "the tier starts strictly above its threshold");
+	assert.equal((await status(tiered, "usd", ctxTokens(300_000))).status(), "cache hit · until 12:15 UTC · miss ≈$1.20–$1.50");
+	assert.equal((await status({ ...flat, tiers: [{ above: 10_000, input: 4 }] }, "usd")).status(), "cache hit · until 12:15 UTC", "an unrecognized tier shape is unknown, not guessed");
 
 	const readFree = await status({ input: 2, output: 8, cacheRead: 0, cacheWrite: 0 }, "usd");
 	await readFree.command("status");
 	assert.match(readFree.lastNote(), /hit \$0\.0002, miss \$0\.021/, "a zero cache-read price with a positive input price is a real price");
 	for (const cost of [{ output: 8 }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, undefined]) {
 		const unknown = await status(cost, "usd");
-		assert.equal(unknown.status(), "cache hit · until 12:15Z", "missing or all-zero prices show no cost, never $0");
+		assert.equal(unknown.status(), "cache hit · until 12:15 UTC", "missing or all-zero prices show no cost, never $0");
 		await unknown.command("status");
 		assert.match(unknown.lastNote(), /Approximate input cost: unknown/);
 	}
@@ -275,12 +275,12 @@ test("the label changes exactly at the hit edge between minute ticks, and nothin
 	const h = loadExtension(t, env, { branch: s.branch() });
 	await h.emit("session_start", { reason: "startup" });
 	h.at(T0 + 15 * MIN);
-	assert.equal(await h.tick(), "cache hit · until 12:15Z");
+	assert.equal(await h.tick(), "cache hit · until 12:15 UTC");
 	h.at(T0 + 15.5 * MIN - 1);
-	assert.equal(await h.tick(), "cache hit · until 12:15Z");
+	assert.equal(await h.tick(), "cache hit · until 12:15 UTC");
 	const rendered = h.statuses.length;
 	h.at(T0 + 15.5 * MIN);
-	assert.equal(await h.tick(), "uncertain · expired after 12:22Z", "flips at the edge, 30 s before the next minute tick");
+	assert.equal(await h.tick(), "uncertain · expired after 12:22 UTC", "flips at the edge, 30 s before the next minute tick");
 	assert.equal(h.statuses.length, rendered + 1, "one render at the edge");
 	await h.emit("session_shutdown", { reason: "quit" });
 	const after = h.statuses.length;
@@ -334,9 +334,9 @@ test("the known Opus alias links seed, import, learning, and live anchors; ids a
 
 	const h = loadExtension(t, env, { branch: s.branch(), model: { provider: SOL.provider, model: "claude-opus-5.5" } });
 	await h.emit("session_start", { reason: "resume" });
-	assert.equal(h.status(), "cache hit · until 12:15Z", "a 5-5 anchor on the branch serves the active 5.5 model");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC", "a 5-5 anchor on the branch serves the active 5.5 model");
 	await h.respond({ provider: SOL.provider, model });
-	assert.match(h.status(), /^cache hit · until 12:25Z/);
+	assert.match(h.status(), /^cache hit · until 12:25 UTC/);
 	const other = loadExtension(t, env, { branch: s.branch(), model: { provider: "anthropic", model: "claude-opus-5.5" } });
 	await other.emit("session_start", { reason: "resume" });
 	assert.equal(other.status(), "uncertain · no seeded profile for this model", "never across providers");
@@ -353,13 +353,13 @@ test("a repeated message_end never moves the anchor or pairs a response with its
 		const message = { role: "assistant", content: [], api: "openai-responses", ...SOL, usage: usage(200, 10_000, 0), stopReason: "toolUse", timestamp: h.clock.w };
 		h.advance(30_000);
 		await h.emit("message_end", { message });
-		assert.equal(h.status(), "cache hit · until 12:25Z");
+		assert.equal(h.status(), "cache hit · until 12:25 UTC");
 		h.advance(5 * MIN);
 		await h.emit("message_end", { message });
 		await h.emit("message_end", { message: { ...message, usage: usage(200, 10_000, 0) } });
 		await h.command("status");
 		assert.match(h.lastNote(), /since response end: {2}5\.0 min/, "the end time is the first receipt, not the repeat");
-		assert.equal(h.status(), "cache hit · until 12:25Z");
+		assert.equal(h.status(), "cache hit · until 12:25 UTC");
 		await h.respond({ stop: "error", u: usage(0, 0, 0, 0) });
 		assert.equal(h.status(), "uncertain · previous request failed");
 		h.advance(MIN);
@@ -398,7 +398,7 @@ test("a model select between Opus version-separator aliases is not a model chang
 test("startup/resume keeps the history forecast only when the configuration is verified unchanged", async (t) => {
 	const { env, s } = seeded(t);
 	for (const [baseline, reason, expected] of [
-		[{ status: "unchanged" }, "resume", "cache hit · until 12:15Z"],
+		[{ status: "unchanged" }, "resume", "cache hit · until 12:15 UTC"],
 		[{ status: "unknown" }, "startup", "uncertain · configuration not verifiable"],
 		[{ status: "changed", reason: "system_or_tools_changed" }, "startup", "uncertain · system prompt or tools changed"],
 		[{ status: "changed", reason: "thinking_change" }, "resume", "uncertain · thinking level changed"],
@@ -418,9 +418,9 @@ test("every request re-verifies a recovered anchor until a live response replace
 	const config = { changed: false };
 	const h = loadExtension(t, env, { branch: s.branch(), baseline: () => (config.changed ? { status: "changed", reason: "system_or_tools_changed" } : { status: "unchanged" }) });
 	await h.emit("session_start", { reason: "resume" });
-	assert.equal(h.status(), "cache hit · until 12:15Z");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC");
 	await h.emit("before_agent_start", { systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } });
-	assert.equal(h.status(), "cache hit · until 12:15Z", "verified unchanged before the first request");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC", "verified unchanged before the first request");
 	config.changed = true;
 	await h.emit("before_agent_start", { systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } });
 	assert.equal(h.status(), "uncertain · system prompt or tools changed", "a change is caught before the request even when the hook payload looks the same");

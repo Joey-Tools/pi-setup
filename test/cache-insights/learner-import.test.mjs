@@ -253,3 +253,43 @@ test("pair gates: a model mismatch, an inverted response time, or missing previo
 	const [e] = cli(env, ["learn"]).data.envelopes;
 	assert.deepEqual(e.excluded, { model_mismatch: 2, clock_anomaly: 1, usage_missing: 2, prev_usage_missing: 2 });
 });
+
+test("switching provider/model while recording keeps samples, candidates, and profiles per model, with no inheritance", async (t) => {
+	const env = tmpEnv(t);
+	assert.equal(cli(env, ["seed", "github-copilot/gpt-6.1-sol", "25", "30"]).status, 0);
+	assert.equal(cli(env, ["settings", "--time", "utc", "--cost", "off"]).status, 0);
+	const astra = { provider: SOL.provider, model: "gpt-6-astra" };
+	const h = loadExtension(t, env, { branch: [] });
+	await h.emit("session_start", { reason: "startup" });
+	await h.command("on");
+	const select = async (to, from) => {
+		h.ctx.model = { provider: to.provider, id: to.model, api: "openai-responses" };
+		await h.emit("model_select", { model: { provider: to.provider, id: to.model }, previousModel: { provider: from.provider, id: from.model }, source: "set" });
+	};
+	await h.respond();
+	h.advance(MIN);
+	await h.respond();
+	assert.equal(h.status(), "cache hit · until 12:26 UTC");
+	await select(astra, SOL);
+	assert.equal(h.status(), "uncertain · no seeded profile for this model", "uncertain at once: Astra has no profile and never inherits Sol's");
+	await h.respond(astra);
+	h.advance(MIN);
+	await h.respond(astra);
+	assert.equal(h.status(), "uncertain · no seeded profile for this model", "Astra never inherits the Sol seed");
+	assert.equal(cli(env, ["seed", "github-copilot/gpt-6-astra", "10", "15"]).status, 0);
+	h.advance(MIN);
+	await h.respond(astra);
+	assert.match(h.status(), /^cache hit · until 12:1\d UTC$/, "Astra's own 10-minute profile applies automatically");
+	await select(SOL, astra);
+	assert.equal(h.status(), "uncertain · model changed");
+	await h.respond();
+	assert.match(h.status(), /^cache hit · until 12:3\d UTC$/, "back on Sol, Sol's 25-minute profile applies without any manual switch");
+
+	const { envelopes } = cli(env, ["learn"]).data;
+	const by = Object.fromEntries(envelopes.map((e) => [e.model, e]));
+	assert.deepEqual(Object.keys(by).sort(), ["gpt-6-astra", "gpt-6.1-sol"], "candidates are grouped per model automatically");
+	assert.equal(by["gpt-6.1-sol"].qualified, 1);
+	assert.equal(by["gpt-6-astra"].qualified, 2);
+	assert.equal(by["gpt-6-astra"].excluded.boundary, 1, "the pair across the switch is excluded");
+	assert.deepEqual(cli(env, ["status"]).data.profiles.map((p) => [p.model, p.hitUnderMs]), [["gpt-6-astra", 10 * MIN], ["gpt-6.1-sol", 25 * MIN]], "learning never changed a profile");
+});

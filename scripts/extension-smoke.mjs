@@ -431,7 +431,7 @@ async function cacheSmoke(result, cursorExt) {
 	const message = { role: "assistant", content: [{ type: "text", text: secret }], api: "openai-responses", provider: "github-copilot", model: "gpt-6.1-sol", usage: u(10_000), stopReason: "toolUse", timestamp: Date.now() };
 	await runner.emit({ type: "message_start", message: { ...message, content: [] } });
 	await runner.emitMessageEnd({ type: "message_end", message });
-	assert.match(status(), /^cache hit · until \d\d:\d\dZ · miss ≈\$0\.021$/);
+	assert.match(status(), /^cache hit · until \d\d:\d\d UTC · miss ≈\$0\.021$/);
 	await command("status");
 	assert.match(notes.at(-1)[1], /seeded, provisional[\s\S]*observed live; end = message_end receipt[\s\S]*since request start:[\s\S]*since response end:[\s\S]*Forecast for the next request: cache hit/);
 	await command("learn");
@@ -477,7 +477,7 @@ async function cacheSmoke(result, cursorExt) {
 		assert.deepEqual(r.errors, [], JSON.stringify(r.errors));
 	}
 	const preflight = await resumeWith({ ...unchanged });
-	assert.match(preflight.status(), /^cache hit · until \d\d:\d\dZ/, "unchanged configuration keeps the history forecast without a new response");
+	assert.match(preflight.status(), /^cache hit · until \d\d:\d\d UTC/, "unchanged configuration keeps the history forecast without a new response");
 	// Before the first request the runner reports the prompt Pi actually built for the turn, which differs from the
 	// synthetic persisted checkpoint: the recovered hit must not survive into that request.
 	await preflight.runner.emitBeforeAgentStart({ messageType: "user", prompt: "go" }, { cwd: project, selectedTools: ["read"], toolSnippets: {}, toolGuidelines: {}, sections: {} });
@@ -486,7 +486,7 @@ async function cacheSmoke(result, cursorExt) {
 
 	const resumed = await resumeWith({ ...unchanged });
 	const resumedStatus = resumed.status;
-	assert.match(resumedStatus(), /^cache hit · until \d\d:\d\dZ/, "resume recovers the anchor from the real branch");
+	assert.match(resumedStatus(), /^cache hit · until \d\d:\d\d UTC/, "resume recovers the anchor from the real branch");
 	await resumed.runner.getCommand("cache").handler("status", resumed.runner.createContext());
 	assert.match(notes.at(-1)[1], /recovered from the current branch; end = saved entry time \(proxy\)/);
 	await resumed.runner.emit({ type: "session_compact", compactionEntry: {}, reason: "threshold", willRetry: false });
@@ -520,6 +520,7 @@ async function cacheSmoke(result, cursorExt) {
 			},
 			input: async () => undefined,
 			editor: async (title, text) => (views.push([title, text]), `${text}\nedited`),
+			theme: { fg: (token, text) => `«${token}|${text}»` },
 		},
 		"tui",
 	);
@@ -533,7 +534,7 @@ async function cacheSmoke(result, cursorExt) {
 	assert.equal(answers.length, 0, "every scripted choice was offered and used");
 	assert.match(cli("settings"), /time local, cost both/, "the menu saved the settings through the real runner");
 	assert.equal(views[0][0], "Cache status (read-only; edits are ignored)");
-	assert.match(menuStatuses.filter(([key]) => key === "cache-insights").at(-1)[1], /^cache hit · until \d\d:\d\d · miss ≈\$0\.021 \(2\.1 cr\)$/);
+	assert.match(menuStatuses.filter(([key]) => key === "cache-insights").at(-1)[1], /^«dim\|cache hit · until \d\d:\d\d UTC(?:[+-]\d{1,2}(?::\d\d)?)? · miss ≈\$0\.021 \(2\.1 cr\)»$/, "the footer uses the current theme (dim)");
 	await menuRun.runner.emit({ type: "session_shutdown", reason: "quit" });
 	assert.deepEqual(menuRun.errors, [], JSON.stringify(menuRun.errors));
 	assert.ok(!fs.readFileSync(dbPath).toString("latin1").includes(secret), "metadata only");

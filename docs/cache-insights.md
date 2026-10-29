@@ -34,7 +34,21 @@ Nothing imports the Cursor bridge (`lib/index.mjs` and its modules) or the progr
 - `cache expired`: both are **strictly greater** than `expire`.
 - `uncertain`: everything else, including exactly `hit` or exactly `expire`, a long response whose start clock is past `hit` while its end clock is not, and every case below.
 
-**Display and refresh.** The status bar shows absolute times, never a countdown: `cache hit · until 14:32` (start + hit, rounded down) or `uncertain · expired after 14:37` (end + expire, rounded up). Times are local by default, or UTC (`14:32Z`). An optional `· miss ≈$…` suffix shows the cost range. `/cache status` shows both clocks, their provenance, the profile, and the cost range in detail.
+**Display and refresh.** The status bar shows absolute times, never a countdown: `cache hit · until 14:32 UTC+1` (start + hit, rounded down) or `uncertain · expired after 14:37 UTC+1` (end + expire, rounded up). Every footer time carries its zone:
+
+- `UTC` in UTC mode, or when the local offset is zero;
+- otherwise the local offset, for example `UTC+9`, `UTC-5`, `UTC+5:30`, or `UTC-3:30`.
+
+The offset belongs to the shown time itself, so a deadline after a daylight-saving change shows the new offset. Times are local by default, or UTC. Full timestamps in `/cache status` and history keep their existing formats (ISO `…Z` in UTC mode). An optional `· miss ≈$…` suffix shows the cost range. `/cache status` shows both clocks, their provenance, the profile, and the cost range in detail.
+
+**Footer styling.** In the TUI the footer uses Pi's current theme and is styled again at every refresh, so a theme change applies at the next update. Everything is the theme's `dim` colour, like other footer text, except the `cache expired` label, which uses the theme's `warning` colour, the same style as Pi's own cache-miss notices; its cost suffix stays dim. Hits, uncertain states, errors, and "upgrade needed" stay dim. Without a usable theme (`ctx.ui.theme.fg`), the footer is plain text. `/cache` output, the CLI, and stored data never contain styling.
+
+**Local time zone.** "Local" times use the Pi process's time zone: `TZ` if it is set in the environment Pi was started from, otherwise the operating system's default. Your terminal app's own clock display does not change it, but the shell, tmux, SSH session, container, or launcher that starts Pi can.
+
+- The `/cache settings` menu shows the effective zone and current UTC offset, and whether `TZ` overrides it. Its **Local timezone guide** (a read-only view) explains the options: the OS Date & Time settings; one launch with `TZ=Asia/Tokyo pi` (PowerShell: `$env:TZ='Asia/Tokyo'; pi`); persisting with `export TZ=...` in your own shell profile, which affects every program started from it; and `unset TZ`.
+- Restart Pi after changing its environment. Daylight saving time is applied automatically.
+- UTC (`/cache settings time utc`, or the menu) only changes how `/cache` formats times.
+- The plugin never changes `TZ`, the environment, or any shell file, and stores no time zone of its own.
 
 The status recalculates on every observed hook, and on a one-minute timer while a session has a database. An extra one-shot timer fires exactly when the label can next change (hit → uncertain, uncertain → expired), so the status is not up to a minute late. Both timers are unref'd. They are never started without a database, and they are cancelled on shutdown, reload, and storage failure, so nothing renders after close.
 
@@ -80,6 +94,15 @@ Ordinary user, tool-result, custom-message, and extension-state entries do not r
 - Wall time ahead of monotonic time (laptop sleep or a forward clock change) is trusted, because the provider's clock keeps running. `/cache status` reports it as `wall_ahead`.
 
 **Model ids.** Ids are compared exactly, within one provider, except for one known alias: Claude Opus version separators, so `claude-opus-5-5` and `claude-opus-5.5` are the same model. The alias applies consistently to profile lookup, import targets, learner filtering and grouping, pair decisions, and the anchor/active-model comparison. Stored samples and pairs keep the raw reported id. There is no other aliasing and no inheritance across providers.
+
+**Switching models.** Everything per model happens automatically when you change provider or model:
+
+- Live samples and pairs are recorded under the model that actually answered.
+- `/cache learn` groups candidates per provider/model.
+- The status looks up the active model's own profile at once.
+- The pair across a switch is excluded from learning, and the status stays `uncertain` until the new model's next response.
+
+Only the active thresholds are manual (`seed`); candidates are never promoted, and a model without its own profile shows `uncertain · no seeded profile for this model` instead of borrowing another model's or provider's seed. Menu views (status, learning, history) are snapshots: reopen them for fresh data.
 
 **Profiles.** `seed provider/model hit expire` takes plain decimal minutes with `0 < hit <= expire <= 1440`. It sets the active profile for exactly that `provider/model`; seeding the Opus alias of an existing profile updates that profile. Other models never inherit it and show `uncertain · no seeded profile for this model`. The active profile changes only through `seed`. The learner never changes it. The package ships no profile values. For example, the maintainer's local install uses `seed github-copilot/gpt-6.1-sol 25 30`.
 

@@ -40,7 +40,7 @@ test("bare /cache opens the main menu, shows status read-only, and returns to th
 	assert.ok(h.selects[0].signal instanceof AbortSignal);
 	assert.equal(h.editors[0].title, "Cache status (read-only; edits are ignored)");
 	assert.match(h.editors[0].text, /Forecast for the next request: cache hit/);
-	assert.equal(h.status(), "cache hit · until 12:15Z");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC");
 	h.script({ select: ["Close"] });
 	await h.command("menu");
 	assert.equal(h.selects.length, 3, "/cache menu is an alias");
@@ -52,11 +52,11 @@ test("/cache settings edits time and cost through pickers; values persist and ch
 	await h.emit("session_start", { reason: "startup" });
 	h.script({ select: [/^Times:/, "UTC", /^Cost:/, "USD and GitHub credits", "Back"] });
 	await h.command("settings");
-	assert.deepEqual(h.selects[0].choices, ["Times: UTC (change)", "Cost: off (change)", "Back"]);
+	assert.deepEqual(h.selects[0].choices, ["Times: UTC (change)", "Cost: off (change)", "Local timezone guide", "Back"]);
 	assert.deepEqual(h.selects[3].choices, ["Off", "USD", "GitHub credits", "USD and GitHub credits", "Back"]);
-	assert.deepEqual(h.selects[4].choices, ["Times: UTC (change)", "Cost: both (change)", "Back"], "the loop shows saved values");
+	assert.deepEqual(h.selects[4].choices, ["Times: UTC (change)", "Cost: both (change)", "Local timezone guide", "Back"], "the loop shows saved values");
 	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "both" });
-	assert.equal(h.status(), "cache hit · until 12:15Z · miss ≈$0.021 (2.1 cr)");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC · miss ≈$0.021 (2.1 cr)");
 	h.script({ select: [/^Times:/, "Local time", "Back"] });
 	await h.command("settings");
 	assert.equal(cli(env, ["settings"]).data.settings.time, "local");
@@ -279,7 +279,7 @@ test("hosts whose UI and context use private fields and getters keep working ins
 	await h.command("");
 	assert.match(h.selects[0].title, /^Cache insights · github-copilot\/gpt-6\.1-sol · /, "the model getter works through the menu");
 	assert.equal(cli(env, ["settings"]).data.settings.cost, "usd");
-	assert.equal(h.status(), "cache hit · until 12:15Z", "status refresh through the private-field UI works");
+	assert.equal(h.status(), "cache hit · until 12:15 UTC", "status refresh through the private-field UI works");
 	assert.ok(!h.notes.some(([, m]) => /local problem/.test(m)));
 });
 
