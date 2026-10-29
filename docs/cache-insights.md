@@ -41,8 +41,22 @@ The status recalculates on every observed hook, and on a one-minute timer while 
 **Anchors.**
 
 - **Live:** an assistant `message_end` with stop reason `stop`, `toolUse`, or `length`. Its request start is the message timestamp (Pi records it when the provider request starts). Its end is when `message_end` was received, which is after the response and before tools run. It is not `turn_end` or `agent_end`.
-- **Recovered at startup or resume:** the latest response on the **current branch only** (`ctx.sessionManager.getBranch()`), never another session's latest event. The end is that entry's saved timestamp, a proxy labeled as such. With a seed and existing history, the first status after startup is meaningful without recording anything new.
+- **Recovered at startup or resume:** the latest response on the **current branch only** (`ctx.sessionManager.getBranch()`), never another session's latest event. The end is that entry's saved timestamp, a proxy labeled as such. The recovered anchor counts only if the configuration it was sent with is verified unchanged (see "Baseline check" below). With a seed, existing history, and an unchanged configuration, the first status after startup is meaningful without recording anything new.
 - **After `/reload`:** the anchor is recovered too, but the forecast stays `uncertain · extension reloaded` until the next response, because the in-memory system-prompt/tool baseline is lost.
+- **Repeated events:** a repeated `message_end` for the same response (same provider, model, and request start, or the same message object) is ignored before anything changes. It cannot extend the anchor's end time or pair a response with itself, whether or not recording is on. The check is in memory, bounded to the last 512 responses, and stores nothing.
+
+**Baseline check (startup and resume, in memory only).** The thin adapter injects Pi's own projection helpers into a dependency-free core resolver (`createBaselineResolver`):
+
+- `buildSessionContext(entries)` from `@earendil-works/pi-coding-agent` projects the current branch: its messages and thinking level.
+- `getCurrentSystemPrompt(messages)` and `getCurrentTools(messages)` from `@earendil-works/pi-ai` resolve the persisted system-message checkpoints and patches into the system prompt and tool declarations in effect.
+
+The resolver compares those with the running configuration: `ctx.getSystemPrompt()`, the active tools' declarations (`pi.getActiveTools()` names looked up in `pi.getAllTools()`, comparing name, description, and parameters while preserving declaration order and ignoring object-key order), and `pi.getThinkingLevel()`. The result is one of three:
+
+- **unchanged:** the recovered history forecast stands;
+- **changed:** `uncertain · system prompt or tools changed` or `uncertain · thinking level changed`;
+- **unknown:** `uncertain · configuration not verifiable`. This covers an empty persisted prompt (for example a branch without system checkpoints), tool metadata without parameters, an active tool without metadata, a missing thinking level, a missing helper, or any error.
+
+Until a live response replaces the recovered anchor, the check runs again at every `before_agent_start`, so a configuration changed while Pi was closed, or before the first request, cannot stay a hit into that request. Reload, fork, and new sessions stay uncertain regardless of the result. Nothing from the check is stored, hashed, or logged, and no token prefix is reconstructed.
 
 **Uncertain until the next usable response:**
 
@@ -50,7 +64,7 @@ The status recalculates on every observed hook, and on a one-minute timer while 
 - no anchor;
 - the anchor's model differs from the active model;
 - the provider answered with a different model. Only the same id (see "Model ids" below), optionally with a snapshot suffix `-YYYY-MM-DD` (OpenAI style) or `-YYYYMMDD` (Anthropic style, for example `claude-opus-5-5-20261101`), counts as the same model. Any other suffix is a different model: `gpt-6.1-sol-mini` is not `gpt-6.1-sol`;
-- a model change with a previous model, or a thinking-level change;
+- a model change with a previous model, or a thinking-level change. A `model_select` between Opus version-separator aliases of the same provider is not a change;
 - a system prompt or tool-set change, whether persisted as a `system` message entry or detected by comparing `before_agent_start` events in memory (never stored);
 - compaction, `/tree`, fork, reload, or a new session;
 - an error or abort;
@@ -182,6 +196,7 @@ Recording is separate from forecasting: with recording off, the seeded forecast 
 - Compaction cost estimates, blocking confirmations before a likely miss, or automatic or paid cache warming.
 - Retention, deletion, or export commands.
 - Server-side confirmation of cache state. Provider-hidden retries and fallbacks are not visible.
+- An exact match between the startup baseline and the prompt Pi builds for a turn. At `before_agent_start`, Pi reports the prompt it built for that turn. If that differs textually from the persisted checkpoints (for example, sections added per turn), the recovered anchor becomes `uncertain` until the response, which errs toward uncertain. Sessions without system checkpoints cannot be verified and stay uncertain until a new response.
 - Exact dedup of responses without a request start between live recording and a later import. Such a response can appear twice, once as `none` and once as `entry_id`/`position`. It is rare and never used for learning.
 
 ## Decisions taken under the agreed defaults

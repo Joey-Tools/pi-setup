@@ -124,9 +124,10 @@ export function cli(env, args, { json = true } = {}) {
  * Loads the extension through its public registration with a mocked Pi API and context. `pi` throws on any
  * call that could send a model request or change Pi state; the model registry has no usable methods.
  */
-export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || mode === "rpc", model = { ...SOL }, branch = [], confirm = true, thinking = "high", loadSqlite } = {}) {
+export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || mode === "rpc", model = { ...SOL }, branch = [], confirm = true, thinking = "high", loadSqlite, baseline = { status: "unchanged" } } = {}) {
 	const clock = { w: T0, m: 1_000_000 };
-	const h = { env, clock, branch, notes: [], statuses: [], confirms: [], uiErrors: [], timers: new Set() };
+	// `baseline` is the injected startup/resume configuration check: an object result, or a function (ctx, pi) => result.
+	const h = { env, clock, branch, notes: [], statuses: [], confirms: [], uiErrors: [], timers: new Set(), baseline, baselineCalls: 0 };
 	const handlers = new Map();
 	const commands = new Map();
 	const forbidden = (name) => () => {
@@ -169,7 +170,7 @@ export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || 
 	};
 	const cancel = (handle) => h.timers.delete(handle);
 	const timers = { setInterval: (fn, ms) => schedule(fn, ms, ms), clearInterval: cancel, setTimeout: (fn, ms) => schedule(fn, ms), clearTimeout: cancel };
-	h.insights = registerCacheInsights(pi, { env: { PI_CODING_AGENT_DIR: env.agentDir }, sessionsDir: env.sessionsRoot, clock: { wall: () => clock.w, mono: () => clock.m }, timers, loadSqlite });
+	h.insights = registerCacheInsights(pi, { env: { PI_CODING_AGENT_DIR: env.agentDir }, sessionsDir: env.sessionsRoot, clock: { wall: () => clock.w, mono: () => clock.m }, timers, loadSqlite, resolveBaseline: (...a) => (h.baselineCalls++, typeof h.baseline === "function" ? h.baseline(...a) : h.baseline) });
 	h.handlers = handlers;
 	h.commands = commands;
 	h.advance = (ms) => {

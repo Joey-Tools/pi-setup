@@ -7,8 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import zlib from "node:zlib";
-import cacheInsights from "../../extensions/cache-insights/index.ts";
-import { CacheInsightsError, defaultSessionsDir, openCacheDb, SCHEMA_VERSION } from "../../lib/cache-insights/index.mjs";
+import { CacheInsightsError, defaultSessionsDir, openCacheDb, registerCacheInsights, SCHEMA_VERSION } from "../../lib/cache-insights/index.mjs";
 import { CLI, cli, dbBytes, loadExtension, MIN, REPO, SENTINEL, SessionFile, T0, tmpEnv } from "./harness.mjs";
 
 const open = (env, opts = {}) => openCacheDb({ root: env.root, workspaceCwd: env.workspace, ...opts });
@@ -299,7 +298,7 @@ test("without node:sqlite the feature reports a generic error, creates nothing, 
 	assert.equal(h.status(), undefined);
 });
 
-test("the extension entry registers only /cache and hooks, opens nothing, and imports no Cursor or progress code", () => {
+test("registration adds only /cache and hooks, opens nothing, and the entry imports no Cursor or progress code", () => {
 	const handlers = new Map();
 	const commands = new Map();
 	const realSetInterval = globalThis.setInterval;
@@ -307,12 +306,15 @@ test("the extension entry registers only /cache and hooks, opens nothing, and im
 		throw new Error("timer started by the factory");
 	};
 	try {
-		cacheInsights({ on: (e, fn) => handlers.set(e, fn), registerCommand: (n, o) => commands.set(n, o) });
+		registerCacheInsights({ on: (e, fn) => handlers.set(e, fn), registerCommand: (n, o) => commands.set(n, o) });
 	} finally {
 		globalThis.setInterval = realSetInterval;
 	}
 	assert.deepEqual([...commands.keys()], ["cache"]);
 	for (const hook of ["session_start", "session_shutdown", "session_tree", "session_compact", "model_select", "thinking_level_select", "before_agent_start", "message_start", "message_end", "agent_settled"]) assert.ok(handlers.has(hook), hook);
+	const entry = fs.readFileSync(path.join(REPO, "extensions", "cache-insights", "index.ts"), "utf8");
+	assert.match(entry, /createBaselineResolver\(\{ buildSessionContext, getCurrentSystemPrompt, getCurrentTools \}\)/, "the thin entry injects Pi's own projection helpers");
+	assert.deepEqual([...entry.matchAll(/from "([^"]+)"/g)].map((m) => m[1]), ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "../../lib/cache-insights/index.mjs"]);
 	const dir = path.join(REPO, "lib", "cache-insights");
 	const sources = [fs.readFileSync(path.join(REPO, "extensions", "cache-insights", "index.ts"), "utf8"), ...fs.readdirSync(dir).map((f) => fs.readFileSync(path.join(dir, f), "utf8"))];
 	for (const src of sources) {

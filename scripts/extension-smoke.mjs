@@ -443,17 +443,49 @@ async function cacheSmoke(result, cursorExt) {
 	await runner.emit({ type: "session_shutdown", reason: "quit" });
 	assert.equal(status(), undefined, "status cleared on shutdown");
 
-	// A real SessionManager branch: resume recovers the anchor from the saved assistant entry (end = entry time).
+	// A real SessionManager branch with persisted system checkpoints/patches: resume recovers the anchor from the saved
+	// assistant entry (end = entry time) only when Pi's own projection of the branch matches the running configuration.
+	const readTool = { name: "read", description: "Synthetic read tool", parameters: { type: "object", properties: {} } };
+	const bashTool = { name: "bash", description: "Synthetic bash tool", parameters: { type: "object", properties: {} } };
 	const real = pi.SessionManager.inMemory(project);
+	real.appendMessage({ role: "system", sections: { preamble: "Synthetic baseline", rules: "Synthetic rules" }, toolsAdded: [readTool], timestamp: Date.now() - 180_000 });
+	real.appendMessage({ role: "system", sections: { rules: "Updated synthetic rules" }, timestamp: Date.now() - 170_000 });
 	real.appendMessage({ role: "user", content: [{ type: "text", text: secret }], timestamp: Date.now() - 61_000 });
 	const assistantId = real.appendMessage({ ...message, stopReason: "stop", timestamp: Date.now() - 60_000 });
 	const saved = real.getBranch().find((e) => e.id === assistantId);
 	assert.ok(saved && Number.isFinite(Date.parse(saved.timestamp)), "the saved entry has a timestamp for the end proxy");
-	const resumed = stubRunner(result, real, "cache-resume", model);
-	const resumedStatuses = [];
-	resumed.runner.setUIContext({ setWidget: () => {}, setStatus: (key, text) => resumedStatuses.push([key, text]), notify: (msg, level) => notes.push([level, msg]), confirm: async () => true }, "tui");
-	const resumedStatus = () => resumedStatuses.filter(([key]) => key === "cache-insights").at(-1)?.[1];
-	await resumed.runner.emit({ type: "session_start", reason: "resume" });
+	const projected = pi.buildSessionContext(real.getBranch());
+	assert.equal(typeof projected.thinkingLevel, "string", "Pi projects the branch thinking level");
+	const unchanged = { prompt: "Synthetic baseline\n\nUpdated synthetic rules", active: ["read"], all: [{ ...readTool, execute: () => {} }, bashTool], thinking: projected.thinkingLevel };
+	const resumeWith = async (config) => {
+		const r = stubRunner(result, real, "cache-resume", model, { getActiveTools: () => config.active, getAllTools: () => config.all, getThinkingLevel: () => config.thinking, getSystemPrompt: () => config.prompt });
+		const seen = [];
+		r.runner.setUIContext({ setWidget: () => {}, setStatus: (key, text) => seen.push([key, text]), notify: (msg, level) => notes.push([level, msg]), confirm: async () => true }, "tui");
+		await r.runner.emit({ type: "session_start", reason: "resume" });
+		return { ...r, config, status: () => seen.filter(([key]) => key === "cache-insights").at(-1)?.[1] };
+	};
+	for (const [change, reason] of [
+		[{ prompt: "Synthetic baseline\n\nSynthetic rules" }, "system prompt or tools changed"],
+		[{ active: ["read", "bash"] }, "system prompt or tools changed"],
+		[{ all: [{ ...readTool, description: "Edited" }, bashTool] }, "system prompt or tools changed"],
+		[{ all: [{ name: "read", description: "Synthetic read tool" }] }, "configuration not verifiable"],
+		[{ thinking: projected.thinkingLevel === "high" ? "low" : "high" }, "thinking level changed"],
+	]) {
+		const r = await resumeWith({ ...unchanged, ...change });
+		assert.match(r.status(), new RegExp(`^uncertain · ${reason}`), JSON.stringify(change));
+		await r.runner.emit({ type: "session_shutdown", reason: "quit" });
+		assert.deepEqual(r.errors, [], JSON.stringify(r.errors));
+	}
+	const preflight = await resumeWith({ ...unchanged });
+	assert.match(preflight.status(), /^cache hit · until \d\d:\d\dZ/, "unchanged configuration keeps the history forecast without a new response");
+	// Before the first request the runner reports the prompt Pi actually built for the turn, which differs from the
+	// synthetic persisted checkpoint: the recovered hit must not survive into that request.
+	await preflight.runner.emitBeforeAgentStart({ messageType: "user", prompt: "go" }, { cwd: project, selectedTools: ["read"], toolSnippets: {}, toolGuidelines: {}, sections: {} });
+	assert.match(preflight.status(), /^uncertain · system prompt or tools changed/, "a changed configuration cannot stay a hit into the next request");
+	await preflight.runner.emit({ type: "session_shutdown", reason: "quit" });
+
+	const resumed = await resumeWith({ ...unchanged });
+	const resumedStatus = resumed.status;
 	assert.match(resumedStatus(), /^cache hit · until \d\d:\d\dZ/, "resume recovers the anchor from the real branch");
 	await resumed.runner.getCommand("cache").handler("status", resumed.runner.createContext());
 	assert.match(notes.at(-1)[1], /recovered from the current branch; end = saved entry time \(proxy\)/);
@@ -464,7 +496,7 @@ async function cacheSmoke(result, cursorExt) {
 	assert.match(resumedStatus(), /^cache hit/, "a new usable response is the next anchor");
 	await resumed.runner.emit({ type: "session_tree", newLeafId: assistantId, oldLeafId: null });
 	assert.match(resumedStatus(), /^uncertain · moved in the session tree/);
-	await resumed.runner.emitMessageEnd({ type: "message_end", message: { ...message, stopReason: "error", timestamp: Date.now() } });
+	await resumed.runner.emitMessageEnd({ type: "message_end", message: { ...message, stopReason: "error", timestamp: Date.now() + 1 } });
 	assert.match(resumedStatus(), /^uncertain · previous request failed/);
 	await resumed.runner.emit({ type: "session_shutdown", reason: "quit" });
 	assert.deepEqual(resumed.errors, [], JSON.stringify(resumed.errors));
@@ -473,7 +505,7 @@ async function cacheSmoke(result, cursorExt) {
 	assert.deepEqual(errors, [], JSON.stringify(errors));
 }
 
-function stubRunner(result, session, label, model) {
+function stubRunner(result, session, label, model, host = {}) {
 	const runner = new pi.ExtensionRunner(result.extensions, result.runtime, project, session, {});
 	const errors = [];
 	runner.onError((e) => errors.push(e));
@@ -488,14 +520,14 @@ function stubRunner(result, session, label, model) {
 			setSessionName: unexpected("setSessionName"),
 			getSessionName: () => undefined,
 			setLabel: unexpected("setLabel"),
-			getActiveTools: () => ["read", "cursor_worker"],
-			getAllTools: () => [],
+			getActiveTools: host.getActiveTools ?? (() => ["read", "cursor_worker"]),
+			getAllTools: host.getAllTools ?? (() => []),
 			getSettings: () => ({}),
 			setActiveTools: unexpected("setActiveTools"),
 			refreshTools: unexpected("refreshTools"),
 			getCommands: () => [],
 			setModel: unexpected("setModel"),
-			getThinkingLevel: () => "xhigh",
+			getThinkingLevel: host.getThinkingLevel ?? (() => "xhigh"),
 			setThinkingLevel: unexpected("setThinkingLevel"),
 		},
 		{
@@ -509,7 +541,7 @@ function stubRunner(result, session, label, model) {
 			shutdown: () => {},
 			getContextUsage: () => undefined,
 			compact: () => {},
-			getSystemPrompt: () => "",
+			getSystemPrompt: host.getSystemPrompt ?? (() => ""),
 		},
 	);
 	return { runner, errors };

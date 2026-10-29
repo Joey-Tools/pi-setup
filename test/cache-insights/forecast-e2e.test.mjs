@@ -341,3 +341,93 @@ test("the known Opus alias links seed, import, learning, and live anchors; ids a
 	await other.emit("session_start", { reason: "resume" });
 	assert.equal(other.status(), "uncertain · no seeded profile for this model", "never across providers");
 });
+
+test("a repeated message_end never moves the anchor or pairs a response with itself, with recording on or off", async (t) => {
+	for (const recording of [true, false]) {
+		const env = tmpEnv(t);
+		assert.equal(cli(env, ["seed", "github-copilot/gpt-6.1-sol", "25", "30"]).status, 0);
+		assert.equal(cli(env, ["settings", "--time", "utc", "--cost", "off"]).status, 0);
+		const h = loadExtension(t, env, { branch: [] });
+		await h.emit("session_start", { reason: "startup" });
+		if (recording) await h.command("on");
+		const message = { role: "assistant", content: [], api: "openai-responses", ...SOL, usage: usage(200, 10_000, 0), stopReason: "toolUse", timestamp: h.clock.w };
+		h.advance(30_000);
+		await h.emit("message_end", { message });
+		assert.equal(h.status(), "cache hit · until 12:25Z");
+		h.advance(5 * MIN);
+		await h.emit("message_end", { message });
+		await h.emit("message_end", { message: { ...message, usage: usage(200, 10_000, 0) } });
+		await h.command("status");
+		assert.match(h.lastNote(), /since response end: {2}5\.0 min/, "the end time is the first receipt, not the repeat");
+		assert.equal(h.status(), "cache hit · until 12:25Z");
+		await h.respond({ stop: "error", u: usage(0, 0, 0, 0) });
+		assert.equal(h.status(), "uncertain · previous request failed");
+		h.advance(MIN);
+		await h.respond();
+		assert.match(h.status(), /^cache hit/, "a genuinely new response after an error is not mistaken for a repeat");
+		if (recording) {
+			const { envelopes } = cli(env, ["learn"]).data;
+			assert.equal(envelopes[0].pairs, 2, "first→error and error→retry; no self pair");
+			assert.deepEqual(envelopes[0].excluded, { cur_not_success: 1, prev_not_success: 1 });
+			assert.equal(cli(env, ["status"]).data.counts.live, 3);
+		}
+	}
+});
+
+test("a model select between Opus version-separator aliases is not a model change; a real change still is", async (t) => {
+	const env = tmpEnv(t);
+	assert.equal(cli(env, ["seed", "github-copilot/claude-opus-5.5", "25", "30"]).status, 0);
+	const opus = { provider: SOL.provider, model: "claude-opus-5.5" };
+	const h = loadExtension(t, env, { branch: [], model: opus });
+	await h.emit("session_start", { reason: "startup" });
+	await h.command("on");
+	await h.respond(opus);
+	await h.emit("model_select", { model: { provider: SOL.provider, id: "claude-opus-5-5" }, previousModel: { provider: SOL.provider, id: "claude-opus-5.5" }, source: "restore" });
+	assert.match(h.status(), /^cache hit/, "alias-only select keeps the hit");
+	h.advance(MIN);
+	await h.respond(opus);
+	const [e] = cli(env, ["learn"]).data.envelopes;
+	assert.equal(e.qualified, 1, "and does not exclude the learning pair");
+	await h.emit("model_select", { model: { provider: "anthropic", id: "claude-opus-5.5" }, previousModel: { provider: SOL.provider, id: "claude-opus-5.5" }, source: "set" });
+	assert.equal(h.status(), "uncertain · model changed", "another provider is a change");
+	await h.respond(opus);
+	await h.emit("model_select", { model: { provider: SOL.provider, id: "claude-opus-5-6" }, previousModel: { provider: SOL.provider, id: "claude-opus-5.5" }, source: "set" });
+	assert.equal(h.status(), "uncertain · model changed", "another version is a change");
+});
+
+test("startup/resume keeps the history forecast only when the configuration is verified unchanged", async (t) => {
+	const { env, s } = seeded(t);
+	for (const [baseline, reason, expected] of [
+		[{ status: "unchanged" }, "resume", "cache hit · until 12:15Z"],
+		[{ status: "unknown" }, "startup", "uncertain · configuration not verifiable"],
+		[{ status: "changed", reason: "system_or_tools_changed" }, "startup", "uncertain · system prompt or tools changed"],
+		[{ status: "changed", reason: "thinking_change" }, "resume", "uncertain · thinking level changed"],
+		[null, "startup", "uncertain · configuration not verifiable"],
+		[{ status: "unchanged" }, "reload", "uncertain · extension reloaded"],
+		[{ status: "unchanged" }, "fork", "uncertain · forked session"],
+	]) {
+		const h = loadExtension(t, env, { branch: s.branch(), baseline });
+		await h.emit("session_start", { reason });
+		assert.equal(h.status(), expected, `${reason} with ${JSON.stringify(baseline)}`);
+		if (reason === "reload" || reason === "fork") assert.equal(h.baselineCalls, 0, "a verified baseline never clears reload or fork");
+	}
+});
+
+test("every request re-verifies a recovered anchor until a live response replaces it", async (t) => {
+	const { env, s } = seeded(t);
+	const config = { changed: false };
+	const h = loadExtension(t, env, { branch: s.branch(), baseline: () => (config.changed ? { status: "changed", reason: "system_or_tools_changed" } : { status: "unchanged" }) });
+	await h.emit("session_start", { reason: "resume" });
+	assert.equal(h.status(), "cache hit · until 12:15Z");
+	await h.emit("before_agent_start", { systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } });
+	assert.equal(h.status(), "cache hit · until 12:15Z", "verified unchanged before the first request");
+	config.changed = true;
+	await h.emit("before_agent_start", { systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } });
+	assert.equal(h.status(), "uncertain · system prompt or tools changed", "a change is caught before the request even when the hook payload looks the same");
+	await h.respond();
+	assert.match(h.status(), /^cache hit/, "a usable live response becomes the anchor");
+	const calls = h.baselineCalls;
+	await h.emit("before_agent_start", { systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"] } });
+	assert.equal(h.baselineCalls, calls, "live anchors use the in-memory prompt/tool comparison instead");
+	assert.match(h.status(), /^cache hit/);
+});
