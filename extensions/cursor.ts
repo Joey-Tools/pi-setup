@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { configFromEnv, createModelReviewer, userMessagesFromBranch, WorkerError, WorkerManager } from "../lib/index.mjs";
+import { configFromEnv, createModelReviewer, describeProfile, userMessagesFromBranch, WorkerError, WorkerManager } from "../lib/index.mjs";
 
 const Params = Type.Object(
 	{
@@ -44,6 +44,23 @@ function formatList(manager: WorkerManager, workers: WorkerSummary[]): string {
 		lines.push(`- ${w.name} [${state}] mode=${w.mode ?? "?"}${last} cwd=${w.cwd} session=${w.sessionId}`);
 	}
 	return lines.join("\n");
+}
+
+type Progress = {
+	phase: string;
+	profile: Record<string, string>;
+	profileStatus: string;
+	elapsedMs: number;
+	toolCalls: number;
+	resultChars: number;
+	permissionReviews: number;
+};
+
+function progressText(name: string, p: Progress): string {
+	return [
+		`Cursor worker "${name}" running (${p.phase}): ${describeProfile(p.profile, p.profileStatus)}`,
+		`${Math.round(p.elapsedMs / 1000)}s, ${p.toolCalls} tool calls, ${p.resultChars} chars${p.permissionReviews ? `, ${p.permissionReviews} permission reviews` : ""}`,
+	].join("\n");
 }
 
 export default function cursorWorkers(pi: ExtensionAPI) {
@@ -135,26 +152,27 @@ export default function cursorWorkers(pi: ExtensionAPI) {
 					askPermission,
 					reviewPermission,
 					userContext,
-					onProgress: (p: { elapsedMs: number; toolCalls: number; resultChars: number; permissionReviews: number }) =>
+					onProgress: (p: Progress) =>
 						onUpdate?.({
-							content: [
-								{
-									type: "text",
-									text: `Cursor worker "${name}" running: ${Math.round(p.elapsedMs / 1000)}s, ${p.toolCalls} tool calls, ${p.resultChars} chars${p.permissionReviews ? `, ${p.permissionReviews} permission reviews` : ""}`,
-								},
-							],
-							details: { action: "run", status: "running", ...p },
+							content: [{ type: "text", text: progressText(name, p) }],
+							details: { action: "run", status: "running", name, ...p },
 						}),
 				});
 			} catch (err) {
-				// Keep the reviewer's usage in Pi's totals even when the run fails.
-				const failure = err instanceof WorkerError ? (err.details as { usage?: any; counts?: Record<string, number> } | undefined) : undefined;
-				const usage = failure?.usage;
-				if (!usage) throw err;
+				if (!(err instanceof WorkerError)) throw err;
+				// The failure keeps its profile snapshot and counts; the reviewer's usage stays in Pi's totals.
+				const { usage, ...failure } = (err.details ?? {}) as { usage?: any; profile?: Record<string, string>; profileStatus?: string };
+				let text = err.message;
+				if (!failure.profile) {
+					// Rejected before the run started: only the configured profile is known, never a verified one.
+					failure.profile = { ...m.opts.profile };
+					failure.profileStatus = "configured";
+					text += `\nCursor profile: ${describeProfile(failure.profile, failure.profileStatus)}.`;
+				}
 				return {
-					content: [{ type: "text", text: (err as Error).message }],
-					details: { action: "run", status: "failed", name, counts: failure?.counts },
-					usage,
+					content: [{ type: "text", text }],
+					details: { action: "run", status: "failed", name, ...failure },
+					...(usage ? { usage } : {}),
 					isError: true,
 				};
 			}

@@ -86,8 +86,25 @@ try {
 		ui: { notify: (msg, type) => notes.push([type, msg]), confirm: async (title, message) => (confirms.push(message), true) },
 	};
 	const updates = [];
-	let res = await tool.execute("c1", { action: "run", name: "w", task: "REMEMBER fig" }, undefined, (u) => updates.push(u), ctx);
-	assert.match(res.content[0].text, /model=claude-opus-5-5 context=1m effort=high fast=false/);
+	const label = "model=claude-opus-5-5 context=1m effort=high fast=false";
+	const profile = { model: "claude-opus-5-5", context: "1m", effort: "high", fast: "false" };
+	const firstRun = tool.execute("c1", { action: "run", name: "w", task: "REMEMBER fig" }, undefined, (u) => updates.push(u), ctx);
+	// The first update exists before the agent is even started: the profile is visible, but not yet verified.
+	assert.equal(updates.length, 1, "first progress update is immediate");
+	assert.match(updates[0].content[0].text, new RegExp(`^Cursor worker "w" running \\(connect\\): ${label} \\(configured; not yet verified\\)\n`));
+	assert.deepEqual(updates[0].details.profile, profile);
+	assert.equal(updates[0].details.profileStatus, "configured");
+	let res = await firstRun;
+	assert.match(res.content[0].text, new RegExp(`${label} \\(verified before prompt\\)`));
+	const promptUpdate = updates.find((u) => u.details.phase === "prompt");
+	assert.match(promptUpdate.content[0].text, new RegExp(`^Cursor worker "w" running \\(prompt\\): ${label} \\(verified before prompt\\)\n\\d+s, 0 tool calls`));
+	assert.ok(updates.every((u) => u.details.action === "run" && u.details.status === "running" && u.details.name === "w"));
+	for (const u of updates) if (u.details.profileStatus !== "verified") assert.doesNotMatch(u.content[0].text, /verified before prompt/);
+	const stored = JSON.parse(JSON.stringify(res.details));
+	assert.deepEqual(stored.profile, profile);
+	assert.equal(stored.profileStatus, "verified");
+	assert.equal(stored.phase, "prompt");
+	assert.equal(res.isError, undefined);
 
 	// Default policy review: the active Pi model approves once, with no tools, no history, low thinking.
 	answers.push('{"decision":"approve","reason":"routine cleanup inside the task"}');
@@ -210,10 +227,70 @@ try {
 	assert.match(res.content[0].text, /local worker record deleted.*Cursor's own history and run artifacts remain/);
 	for (const h of shutdown) await h({ type: "session_shutdown", reason: "quit" }, ctx);
 
+	await failureSmoke(tool, { ...ctx, sessionManager: sm("ext-smoke-failures") }, { label, profile });
+	for (const h of shutdown) await h({ type: "session_shutdown", reason: "quit" }, ctx);
+
 	await progressSmoke(result, ext, tool);
 	console.log("extension smoke: PASS");
 } finally {
 	fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// Failed runs come back as isError results whose text and stored details keep the profile snapshot and an honest
+// status, with or without reviewer usage. FAKE_ACP_CONFIG is read when each fake agent process starts.
+async function failureSmoke(tool, ctx, { label, profile }) {
+	const fakeConfig = process.env.FAKE_ACP_CONFIG;
+	const withFake = async (extra, fn) => {
+		process.env.FAKE_ACP_CONFIG = JSON.stringify({ ...JSON.parse(fakeConfig), ...extra });
+		try {
+			return await fn();
+		} finally {
+			process.env.FAKE_ACP_CONFIG = fakeConfig;
+		}
+	};
+	const stored = (res) => JSON.parse(JSON.stringify(res));
+
+	// Setup failure: Cursor does not offer the 1m context, so nothing is verified and no prompt is sent.
+	let updates = [];
+	let res = stored(
+		await withFake({ contextOptions: ["300k"] }, () => tool.execute("f1", { action: "run", name: "setupfail", task: "ECHO x" }, undefined, (u) => updates.push(u), ctx)),
+	);
+	assert.equal(res.isError, true);
+	assert.match(res.content[0].text, /^Cursor ACP does not offer context=1m/);
+	assert.ok(res.content[0].text.includes(`\nCursor profile: ${label} (configured; not yet verified); phase=setup.`));
+	assert.doesNotMatch(res.content[0].text, /verified before prompt/);
+	assert.deepEqual(res.details.profile, profile);
+	assert.equal(res.details.profileStatus, "configured");
+	assert.equal(res.details.phase, "setup");
+	assert.equal(res.details.action, "run");
+	assert.equal(res.details.status, "failed");
+	assert.equal(res.details.name, "setupfail");
+	assert.ok(res.details.counts && res.details.artifactDir);
+	assert.equal(res.usage, undefined, "no reviewer usage without a review");
+	assert.ok(updates.length >= 2 && updates.every((u) => u.details.profileStatus === "configured"));
+
+	// Prompt failure: the agent process crashes after the profile was verified for this run.
+	updates = [];
+	res = stored(await tool.execute("f2", { action: "run", name: "crash", task: "CRASH" }, undefined, (u) => updates.push(u), ctx));
+	assert.equal(res.isError, true);
+	assert.match(res.content[0].text, /^Cursor worker "crash" failed during prompt/);
+	assert.ok(res.content[0].text.includes(`\nCursor profile: ${label} (verified before prompt); phase=prompt.`));
+	assert.deepEqual(res.details.profile, profile);
+	assert.equal(res.details.profileStatus, "verified");
+	assert.equal(res.details.phase, "prompt");
+	assert.equal(res.details.status, "failed");
+	assert.equal(res.usage, undefined);
+	assert.ok(updates.some((u) => u.details.phase === "prompt" && u.details.profileStatus === "verified"));
+
+	// Rejected before the run started: only the configured profile is known, and it is not called verified.
+	const busy = tool.execute("f3", { action: "run", name: "busy", task: "SLOW 300" }, undefined, undefined, ctx);
+	res = stored(await tool.execute("f4", { action: "run", name: "busy", task: "ECHO x" }, undefined, undefined, ctx));
+	assert.equal(res.isError, true);
+	assert.match(res.content[0].text, /already running a task/);
+	assert.ok(res.content[0].text.endsWith(`\nCursor profile: ${label} (configured; not yet verified).`));
+	assert.deepEqual(res.details.profile, profile);
+	assert.equal(res.details.profileStatus, "configured");
+	assert.match((await busy).content[0].text, /slow done/);
 }
 
 // Drives progress-update.ts through Pi's real ExtensionRunner, with both extensions loaded, an in-memory
