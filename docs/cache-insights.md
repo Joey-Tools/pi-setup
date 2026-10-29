@@ -49,7 +49,7 @@ The status recalculates on every observed hook, and on a one-minute timer while 
 - no profile for the active model;
 - no anchor;
 - the anchor's model differs from the active model;
-- the provider answered with a different model. Only an identical id, the same id with a `-YYYY-MM-DD` snapshot suffix, or a Claude Opus version-separator variant (`claude-opus-5-5` / `claude-opus-5.5`) counts as the same model, so `gpt-6.1-sol-mini` is not `gpt-6.1-sol`;
+- the provider answered with a different model. Only the same id (see "Model ids" below), optionally with a snapshot suffix `-YYYY-MM-DD` (OpenAI style) or `-YYYYMMDD` (Anthropic style, for example `claude-opus-5-5-20261101`), counts as the same model. Any other suffix is a different model: `gpt-6.1-sol-mini` is not `gpt-6.1-sol`;
 - a model change with a previous model, or a thinking-level change;
 - a system prompt or tool-set change, whether persisted as a `system` message entry or detected by comparing `before_agent_start` events in memory (never stored);
 - compaction, `/tree`, fork, reload, or a new session;
@@ -65,7 +65,9 @@ Ordinary user, tool-result, custom-message, and extension-state entries do not r
 - Wall time more than 5 seconds behind monotonic time is `uncertain · wall clock moved backward`.
 - Wall time ahead of monotonic time (laptop sleep or a forward clock change) is trusted, because the provider's clock keeps running. `/cache status` reports it as `wall_ahead`.
 
-**Profiles.** `seed provider/model hit expire` takes plain decimal minutes with `0 < hit <= expire <= 1440`. It sets the active profile for exactly that `provider/model`. Other models never inherit it and show `uncertain · no seeded profile for this model`. The active profile changes only through `seed`. The learner never changes it. The package ships no profile values. For example, the maintainer's local install uses `seed github-copilot/gpt-6.1-sol 25 30`.
+**Model ids.** Ids are compared exactly, within one provider, except for one known alias: Claude Opus version separators, so `claude-opus-5-5` and `claude-opus-5.5` are the same model. The alias applies consistently to profile lookup, import targets, learner filtering and grouping, pair decisions, and the anchor/active-model comparison. Stored samples and pairs keep the raw reported id. There is no other aliasing and no inheritance across providers.
+
+**Profiles.** `seed provider/model hit expire` takes plain decimal minutes with `0 < hit <= expire <= 1440`. It sets the active profile for exactly that `provider/model`; seeding the Opus alias of an existing profile updates that profile. Other models never inherit it and show `uncertain · no seeded profile for this model`. The active profile changes only through `seed`. The learner never changes it. The package ships no profile values. For example, the maintainer's local install uses `seed github-copilot/gpt-6.1-sol 25 30`.
 
 ## Cost range
 
@@ -92,7 +94,7 @@ This is the approximate **input-only** cost of the next request. Response genera
 | `/cache migrate` | `migrate` | schema upgrade |
 
 - **Validation first:** every command, argument, flag, and value is validated before anything is opened or created. Unknown commands, flags used with the wrong command, repeated single-value flags, empty or non-decimal minutes, and invalid settings are rejected, and no directory or database is created. The CLI exits 2 for these.
-- **Import targets:** without explicit models, import uses the models that have a seeded profile. With neither, it fails with `no_targets` and creates nothing. There are no built-in default models. Claude Opus version separators are matched loosely, and stored ids stay as reported.
+- **Import targets:** without explicit models, import uses the models that have a seeded profile. With neither, it fails with `no_targets` and creates nothing. There are no built-in default models. In Pi, those profiles are read without upgrading anything; an older database reports `migration_required`, and nothing is upgraded or written until you confirm an import.
 - **In Pi:** write commands work only in the interactive TUI, and `seed` and `import` show a confirmation. In `print`, `json`, and `rpc` modes, write commands change nothing. There are no model-callable tools.
 - **CLI options:** `--agent-dir DIR` (default `PI_CODING_AGENT_DIR` or `~/.pi/agent`), `--root DIR` (the cache-insights dir), and `--json`. The CLI writes only the feature's database, and only for write commands. `recording off`, `status`, `learn`, `settings` without flags, and `migrate` never create a database. Exit codes: 0 success, 1 error (a fixed code and message, never paths or raw error text), 2 usage.
 
@@ -110,7 +112,7 @@ This is the approximate **input-only** cost of the next request. Response genera
 - **Versions and migration:**
   - The stored version is checked before anything is written, so not even the journal mode changes. Newer schemas and files with unrelated tables are refused unchanged.
   - Read-only opens (startup, `status`, `learn`, `history`) never migrate. An older file shows `cache: upgrade needed`, and `/cache status` and the CLI report `migration_required`.
-  - Only explicit write commands, and `/cache migrate` or CLI `migrate`, upgrade, in one `BEGIN IMMEDIATE` transaction. A failed migration rolls back completely.
+  - Only explicit, confirmed write commands (`seed`, a confirmed `import`, `on`/`off`, `settings` with values) and `/cache migrate` or CLI `migrate` upgrade, in one `BEGIN IMMEDIATE` transaction. A cancelled seed or import leaves the file byte-identical. A failed migration rolls back completely.
   - A schema-1 file from the earlier unreleased draft (gzip JSON per row) is upgraded losslessly. Its table is renamed intact to `legacy_events`, with every original column, the original payload bytes, and its indexes. A `payload_text` column then holds the decompressed bytes decoded as strict UTF-8, never re-serialized (`NULL` when undecodable). The saved recording choice survives. Legacy rows are not used by the learner.
 - **Sharing:** journal mode `DELETE` (no `-wal` or `-shm` files) and a 2-second `busy_timeout`. Settings, profiles, and the recording choice are shared by every Pi process and the CLI.
 - **Retention:** nothing is deleted by default. Re-imports are idempotent. A storage error stops the feature in that Pi process with one generic warning, and existing data is kept.
@@ -162,7 +164,7 @@ Samples without a request start are kept, and they never qualify for learning.
 - **Input:** qualified pairs for each provider/model. The strong tier, where the previous response had a provider-reported cache read greater than 0, is used for the envelope. Weak-tier and excluded pairs are reported as counts.
 - **Per clock (start and end):** **H** is the longest gap with `cacheRead > 0`. **Z** is the earliest zero-read gap strictly greater than H. Zero reads at or below H contradict expiry (for example a short anomalous miss). They are counted as `contradictory` and never treated as a minimum TTL.
 - **What it does not do:** no gap bins, windows, percentile thresholds, or fitted curves. It computes by iteration, not array spreading, so large histories are safe.
-- **Output:** `/cache learn` reports counts, H and Z per clock, exclusions, and origins next to the active profile.
+- **Output:** `/cache learn` reports counts, H and Z per clock, exclusions, and origins next to the active profile. Each envelope's `model` is the normalized id, and `models` lists the raw reported ids it groups.
 - **Candidate only:** a candidate never changes the active profile. A single lucky hit cannot move the seeded thresholds.
 
 ## Live recording
@@ -180,6 +182,7 @@ Recording is separate from forecasting: with recording off, the seeded forecast 
 - Compaction cost estimates, blocking confirmations before a likely miss, or automatic or paid cache warming.
 - Retention, deletion, or export commands.
 - Server-side confirmation of cache state. Provider-hidden retries and fallbacks are not visible.
+- Exact dedup of responses without a request start between live recording and a later import. Such a response can appear twice, once as `none` and once as `entry_id`/`position`. It is rare and never used for learning.
 
 ## Decisions taken under the agreed defaults
 

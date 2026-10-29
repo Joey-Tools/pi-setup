@@ -263,3 +263,81 @@ test("without a database nothing is created, no timer runs, and writes need the 
 	await tui.tick();
 	assert.equal(tui.statuses.length - before, 1, "after two reloads one minute renders once, not twice");
 });
+
+test("the label changes exactly at the hit edge between minute ticks, and nothing renders after shutdown", async (t) => {
+	const env = tmpEnv(t);
+	const s = new SessionFile({ tag: "edge" });
+	// Started 9.5 min before session start: the 25-minute edge is at T0 + 15.5 min, between minute ticks.
+	s.turn({ start: T0 - 9.5 * MIN, dur: 60_000 });
+	s.write(env.sessionsDir);
+	assert.equal(cli(env, ["seed", "github-copilot/gpt-6.1-sol", "25", "30"]).status, 0);
+	assert.equal(cli(env, ["settings", "--time", "utc", "--cost", "off"]).status, 0);
+	const h = loadExtension(t, env, { branch: s.branch() });
+	await h.emit("session_start", { reason: "startup" });
+	h.at(T0 + 15 * MIN);
+	assert.equal(await h.tick(), "cache hit · until 12:15Z");
+	h.at(T0 + 15.5 * MIN - 1);
+	assert.equal(await h.tick(), "cache hit · until 12:15Z");
+	const rendered = h.statuses.length;
+	h.at(T0 + 15.5 * MIN);
+	assert.equal(await h.tick(), "uncertain · expired after 12:22Z", "flips at the edge, 30 s before the next minute tick");
+	assert.equal(h.statuses.length, rendered + 1, "one render at the edge");
+	await h.emit("session_shutdown", { reason: "quit" });
+	const after = h.statuses.length;
+	h.at(T0 + 60 * MIN);
+	await h.tick();
+	assert.equal(h.statuses.length, after, "no renders after shutdown");
+});
+
+test("Anthropic and OpenAI snapshot responses count as the requested model; other suffixes do not", async (t) => {
+	const env = tmpEnv(t);
+	assert.equal(cli(env, ["seed", "github-copilot/claude-opus-5.5", "4", "5"]).status, 0);
+	const h = loadExtension(t, env, { branch: [], model: { provider: SOL.provider, model: "claude-opus-5.5" } });
+	await h.emit("session_start", { reason: "startup" });
+	const opus = { provider: SOL.provider, model: "claude-opus-5.5" };
+	for (const [responseModel, label] of [
+		["claude-opus-5-5-20261101", /^cache hit/],
+		["claude-opus-5.5-2026-11-01", /^cache hit/],
+		["claude-opus-5-5-mini", /^uncertain · provider answered with a different model/],
+		["claude-opus-5-20261101", /^uncertain · provider answered with a different model/],
+		["claude-opus-5-5-2026110", /^uncertain · provider answered with a different model/],
+	]) {
+		await h.respond({ ...opus, responseModel });
+		assert.match(h.status(), label, responseModel);
+	}
+});
+
+test("the known Opus alias links seed, import, learning, and live anchors; ids are stored as reported", async (t) => {
+	const env = tmpEnv(t);
+	const s = new SessionFile({ tag: "opus" });
+	const model = "claude-opus-5-5";
+	s.turn({ start: T0 - 60 * MIN, provider: SOL.provider, model });
+	s.turn({ gap: 3 * MIN, provider: SOL.provider, model });
+	s.turn({ gap: 3 * MIN, provider: SOL.provider, model, start: T0 - 10 * MIN });
+	s.write(env.sessionsDir);
+	assert.equal(cli(env, ["seed", "github-copilot/claude-opus-5.5", "25", "30"]).status, 0);
+	assert.equal(cli(env, ["settings", "--time", "utc", "--cost", "off"]).status, 0);
+	const imported = cli(env, ["import", "--sessions-dir", env.sessionsRoot]).data;
+	assert.deepEqual(imported.targets, ["github-copilot/claude-opus-5.5"]);
+	assert.equal(imported.summary.responses.added, 3, "the 5-5 history matches the 5.5 seed");
+	const [e] = cli(env, ["learn", "--model", "github-copilot/claude-opus-5.5"]).data.envelopes;
+	assert.equal(e.model, "claude-opus-5.5");
+	assert.deepEqual(e.models, ["claude-opus-5-5"], "raw reported ids are kept");
+	assert.equal(e.qualified, 2);
+	assert.equal(cli(env, ["seed", "github-copilot/claude-opus-5-5", "25", "35"]).status, 0);
+	const { profiles } = cli(env, ["status"]).data;
+	assert.deepEqual(
+		profiles.map((p) => [p.model, p.expireOverMs]),
+		[["claude-opus-5.5", 35 * MIN]],
+		"seeding the alias updates the one profile",
+	);
+
+	const h = loadExtension(t, env, { branch: s.branch(), model: { provider: SOL.provider, model: "claude-opus-5.5" } });
+	await h.emit("session_start", { reason: "resume" });
+	assert.equal(h.status(), "cache hit · until 12:15Z", "a 5-5 anchor on the branch serves the active 5.5 model");
+	await h.respond({ provider: SOL.provider, model });
+	assert.match(h.status(), /^cache hit · until 12:25Z/);
+	const other = loadExtension(t, env, { branch: s.branch(), model: { provider: "anthropic", model: "claude-opus-5.5" } });
+	await other.emit("session_start", { reason: "resume" });
+	assert.equal(other.status(), "uncertain · no seeded profile for this model", "never across providers");
+});

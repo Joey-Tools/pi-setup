@@ -117,7 +117,9 @@ test("re-imports, copied sessions, and hard-link aliases are idempotent; symlink
 	const third = cli(env, ["import", "--sessions-dir", env.sessionsRoot, ...sol]);
 	assert.equal(third.data.summary.responses.added, 0, "re-imports stay idempotent, including position-keyed rows");
 	assert.equal(cli(env, ["status"]).data.counts.samples, 23);
-	for (const out of [again.stdout, again.stderr, cli(env, ["import", "--sessions-dir", env.sessionsRoot, ...sol], { json: false }).stdout]) assert.ok(!out.includes(SENTINEL));
+	const textOut = cli(env, ["import", "--sessions-dir", env.sessionsRoot, ...sol], { json: false }).stdout;
+	assert.match(textOut, /1 without a request start \(kept; excluded from timing learning\)/);
+	for (const out of [again.stdout, again.stderr, textOut]) assert.ok(!out.includes(SENTINEL));
 
 	const db = await openCacheDb({ root: env.root, workspaceCwd: env.workspace });
 	t.after(() => db.close());

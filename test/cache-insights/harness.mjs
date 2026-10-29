@@ -191,7 +191,8 @@ export function loadExtension(t, env, { mode = "tui", hasUI = mode === "tui" || 
 			let next = null;
 			for (const t of h.timers) if (t.due <= clock.m && (!next || t.due < next.due)) next = t;
 			if (!next) break;
-			if (next.every) next.due = Math.max(next.due + next.every, clock.m + 1);
+			// Like Node: an overdue interval fires once, then reschedules from the time it fired.
+			if (next.every) next.due = next.due + next.every > clock.m ? next.due + next.every : clock.m + next.every;
 			else h.timers.delete(next);
 			await next.fn();
 		}

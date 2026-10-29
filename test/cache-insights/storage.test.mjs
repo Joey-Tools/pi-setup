@@ -117,6 +117,29 @@ test("read-only opens never migrate; an explicit upgrade keeps every draft row, 
 	assert.equal(cli(env, ["migrate"]).status, 0, "migrate is idempotent");
 });
 
+test("/cache import never upgrades or writes before confirmation; cancelling leaves the file byte-identical", async (t) => {
+	const env = tmpEnv(t);
+	draftV1(env, { rows: [zlib.gzipSync("{}")] });
+	const hash = sha(env.dbPath);
+	const h = loadExtension(t, env, { confirm: false });
+	await h.command("import");
+	assert.match(h.lastNote(), /needs a one-time upgrade\. Run \/cache migrate/, "no-argument import discovers profiles read-only");
+	await h.command("import github-copilot/gpt-6.1-sol");
+	assert.equal(h.lastNote(), "Cancelled; nothing imported.");
+	assert.equal(h.confirms.length, 1, "asked once, for the explicit import only");
+	assert.equal(sha(env.dbPath), hash, "an older database is untouched");
+
+	const current = tmpEnv(t);
+	assert.equal(cli(current, ["seed", "github-copilot/gpt-6.1-sol", "25", "30"]).status, 0);
+	const before = sha(current.dbPath);
+	const c = loadExtension(t, current, { confirm: false });
+	await c.command("import");
+	assert.match(c.confirms[0][1], /for: github-copilot\/gpt-6\.1-sol\./, "targets come from the seeded profiles");
+	assert.equal(c.lastNote(), "Cancelled; nothing imported.");
+	await c.emit("session_shutdown", { reason: "quit" });
+	assert.equal(sha(current.dbPath), before, "cancelling writes nothing");
+});
+
 test("an unrecognized schema-1 file rolls back untouched; newer and foreign databases are refused unchanged", async (t) => {
 	const env = tmpEnv(t);
 	draftV1(env, { payloadColumn: false });
