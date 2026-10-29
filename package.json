@@ -7,16 +7,17 @@
 	"engines": {
 		"node": ">=22.19"
 	},
-	"files": ["extensions", "lib", "skills", "prompts", "docs", "scripts/configure-cursor.mjs", "README.md"],
+	"files": ["extensions", "lib", "skills", "prompts", "docs", "scripts/configure-cursor.mjs", "scripts/cache-insights.mjs", "README.md"],
 	"scripts": {
-		"test": "node --test test/*.test.mjs",
+		"test": "node --test test/*.test.mjs test/cache-insights/*.test.mjs",
 		"check": "node scripts/check.mjs",
 		"configure:cursor": "node scripts/configure-cursor.mjs",
 		"smoke:extension": "node scripts/extension-smoke.mjs",
+		"cache-insights": "node scripts/cache-insights.mjs",
 		"smoke:live": "node scripts/live-smoke.mjs"
 	},
 	"pi": {
-		"extensions": ["./extensions/cursor.ts", "./extensions/progress-update.ts", "./extensions/approval-history.ts"],
+		"extensions": ["./extensions/cursor.ts", "./extensions/progress-update.ts", "./extensions/approval-history.ts", "./extensions/cache-insights/index.ts"],
 		"skills": ["./skills"],
 		"prompts": ["./prompts/*.md"]
 	},

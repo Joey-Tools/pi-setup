@@ -4,3 +4,5 @@ node_modules/
 .pi-cursor-state/
 .pi/
 *.tmp
+# Workspace-confined temp dir for local test runs (TMPDIR=$PWD/.test-tmp)
+.test-tmp/

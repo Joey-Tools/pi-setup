@@ -1,6 +1,6 @@
 // Offline check that every manifest extension loads in Pi's real extension loader: cursor.ts works end to end
-// against the fake ACP agent, and progress-update.ts's command and hooks run through Pi's real runner next to it.
-// No model calls and no real Cursor process.
+// against the fake ACP agent, and progress-update.ts's and cache-insights/index.ts's commands and hooks run through Pi's
+// real runner next to it. No model calls, no real Cursor process, and nothing written under the real home.
 // Needs the Pi package: set PI_PACKAGE_DIR=/path/to/node_modules/@earendil-works/pi-coding-agent
 // (or have it resolvable from this directory).
 import assert from "node:assert/strict";
@@ -30,6 +30,8 @@ Object.assign(process.env, {
 	PI_CURSOR_ARGS: JSON.stringify([path.join(root, "test", "fixtures", "fake-acp.mjs")]),
 	PI_CURSOR_STATE_DIR: path.join(tmp, "state"),
 	FAKE_ACP_CONFIG: JSON.stringify({ stateDir: path.join(tmp, "fake-sessions") }),
+	// The cache-insights extension resolves its database under the agent dir; keep it in this temp dir, never the real home.
+	PI_CODING_AGENT_DIR: path.join(tmp, "agent"),
 });
 delete process.env.PI_CURSOR_PERMISSIONS;
 delete process.env.PI_CURSOR_REVIEW_PROFILE;
@@ -231,6 +233,7 @@ try {
 	for (const h of shutdown) await h({ type: "session_shutdown", reason: "quit" }, ctx);
 
 	await progressSmoke(result, ext, tool);
+	await cacheSmoke(result, ext);
 	console.log("extension smoke: PASS");
 } finally {
 	fs.rmSync(tmp, { recursive: true, force: true });
@@ -307,44 +310,7 @@ async function progressSmoke(result, cursorExt, cursorTool) {
 
 	const { buildSystemPrompt } = await import(new URL("./core/system-prompt.js", entry).href);
 	const session = pi.SessionManager.inMemory(project);
-	const runner = new pi.ExtensionRunner(result.extensions, result.runtime, project, session, {});
-	const errors = [];
-	runner.onError((e) => errors.push(e));
-	const unexpected = (name) => () => {
-		throw new Error(`unexpected ${name} call in progress smoke`);
-	};
-	runner.bindCore(
-		{
-			sendMessage: unexpected("sendMessage"),
-			sendUserMessage: unexpected("sendUserMessage"),
-			appendEntry: (customType, data) => session.appendCustomEntry(customType, data),
-			setSessionName: unexpected("setSessionName"),
-			getSessionName: () => undefined,
-			setLabel: unexpected("setLabel"),
-			getActiveTools: () => ["read", "cursor_worker"],
-			getAllTools: () => [],
-			getSettings: () => ({}),
-			setActiveTools: unexpected("setActiveTools"),
-			refreshTools: unexpected("refreshTools"),
-			getCommands: () => [],
-			setModel: unexpected("setModel"),
-			getThinkingLevel: () => "xhigh",
-			setThinkingLevel: unexpected("setThinkingLevel"),
-		},
-		{
-			getModel: () => undefined,
-			getScopedModels: () => [],
-			isIdle: () => true,
-			isProjectTrusted: () => true,
-			getSignal: () => undefined,
-			abort: () => {},
-			hasPendingMessages: () => false,
-			shutdown: () => {},
-			getContextUsage: () => undefined,
-			compact: () => {},
-			getSystemPrompt: () => "",
-		},
-	);
+	const { runner, errors } = stubRunner(result, session, "progress");
 	const widgets = [];
 	const notes = [];
 	runner.setUIContext({ setWidget: (key, content) => widgets.push([key, content]), notify: (msg, level) => notes.push([level, msg]) }, "tui");
@@ -363,6 +329,7 @@ async function progressSmoke(result, cursorExt, cursorTool) {
 		const prompt = buildSystemPrompt(started.systemPromptOptions);
 		assert.match(prompt, /<other_ext>\nanother extension's section\n<\/other_ext>/);
 		assert.ok(prompt.includes(cursorTool.promptGuidelines[0]), "Cursor delegation guidance kept");
+		assert.doesNotMatch(prompt, /cache.insights|\/cache/i, "cache insights add no prompt context");
 		return prompt;
 	};
 
@@ -406,5 +373,144 @@ async function progressSmoke(result, cursorExt, cursorTool) {
 
 	await runner.emit({ type: "session_shutdown", reason: "quit" });
 	assert.equal(widget(), undefined);
+	assert.ok(!fs.existsSync(path.join(tmp, "agent", "cache-insights")), "cache insights stay uninitialized without /cache on");
 	assert.deepEqual(errors, [], JSON.stringify(errors));
+}
+
+// Drives cache-insights through Pi's real loader and runner: synthetic history imported and seeded through the
+// stable CLI, then a visible status and /cache output. No model calls; the database lives under the temp agent dir.
+async function cacheSmoke(result, cursorExt) {
+	const cacheExt = result.extensions.find((e) => e.commands.has("cache"));
+	assert.ok(cacheExt && cacheExt !== cursorExt, "/cache is its own extension");
+	assert.equal(cacheExt.tools.size, 0, "cache insights register no tools");
+	for (const hook of ["session_start", "session_shutdown", "session_tree", "session_compact", "model_select", "thinking_level_select", "before_agent_start", "message_start", "message_end", "agent_settled"]) {
+		assert.equal(cacheExt.handlers.get(hook)?.length, 1, `cache ${hook}`);
+	}
+	const agentDir = path.join(tmp, "agent");
+	const dbPath = path.join(agentDir, "cache-insights", "cache-insights.sqlite");
+	const secret = "SMOKE-CONTENT-MUST-NOT-BE-STORED";
+	const { spawnSync } = await import("node:child_process");
+	const cli = (...args) => {
+		const r = spawnSync(process.execPath, [path.join(root, "scripts", "cache-insights.mjs"), ...args, "--agent-dir", agentDir], { cwd: project, encoding: "utf8" });
+		assert.equal(r.status, 0, r.stderr);
+		assert.ok(!r.stdout.includes(secret) && !r.stderr.includes(secret));
+		return r.stdout;
+	};
+	assert.ok(!fs.existsSync(dbPath), "no database before an explicit command");
+
+	// Synthetic history: two Sol responses five minutes apart, the second with a cache read.
+	const sessions = path.join(agentDir, "sessions", "smoke-project");
+	fs.mkdirSync(sessions, { recursive: true });
+	const base = Date.now() - 60 * 60_000;
+	const iso = (ms) => new Date(ms).toISOString();
+	const u = (read) => ({ input: 200, output: 100, cacheRead: read, cacheWrite: read ? 0 : 10_000, totalTokens: 10_250, cost: { input: 0.0004, output: 0.0004, cacheRead: 0, cacheWrite: 0, total: 0.0008 } });
+	const lines = [{ type: "session", version: 3, id: "smoke-session", timestamp: iso(base), cwd: project }];
+	let parent = null;
+	for (const [i, start] of [base, base + 5 * 60_000].entries()) {
+		lines.push({ type: "message", id: `u${i}`, parentId: parent, timestamp: iso(start - 1000), message: { role: "user", content: [{ type: "text", text: secret }], timestamp: start - 1000 } });
+		lines.push({ type: "message", id: `a${i}`, parentId: `u${i}`, timestamp: iso(start + 20_000), message: { role: "assistant", content: [{ type: "text", text: secret }], api: "openai-responses", provider: "github-copilot", model: "gpt-6.1-sol", usage: u(i ? 10_000 : 0), stopReason: "stop", timestamp: start } });
+		parent = `a${i}`;
+	}
+	fs.writeFileSync(path.join(sessions, "smoke.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+	assert.match(cli("seed", "github-copilot/gpt-6.1-sol", "25", "30"), /Active profile set for github-copilot\/gpt-6\.1-sol: hit < 25 min, expired > 30 min/);
+	assert.match(cli("import", "--sessions-dir", path.join(agentDir, "sessions")), /Responses: 2 matched, 2 added[\s\S]*Pairs: 1 added \(1 qualified\)/);
+	assert.match(cli("settings", "--time", "utc", "--cost", "usd"), /time utc, cost usd/);
+	assert.equal(fs.statSync(dbPath).mode & 0o777, 0o600);
+
+	const model = { provider: "github-copilot", id: "gpt-6.1-sol", api: "openai-responses", cost: { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 0 } };
+	const session = pi.SessionManager.inMemory(project);
+	const { runner, errors } = stubRunner(result, session, "cache", model);
+	const statuses = [];
+	const notes = [];
+	runner.setUIContext({ setWidget: () => {}, setStatus: (key, text) => statuses.push([key, text]), notify: (msg, level) => notes.push([level, msg]), confirm: async () => true }, "tui");
+	const command = (args) => runner.getCommand("cache").handler(args, runner.createContext());
+	const status = () => statuses.filter(([key]) => key === "cache-insights").at(-1)?.[1];
+
+	await runner.emit({ type: "session_start", reason: "startup" });
+	assert.equal(status(), "uncertain · no usable previous response yet", "an empty branch has no anchor; other sessions are not used");
+	const message = { role: "assistant", content: [{ type: "text", text: secret }], api: "openai-responses", provider: "github-copilot", model: "gpt-6.1-sol", usage: u(10_000), stopReason: "toolUse", timestamp: Date.now() };
+	await runner.emit({ type: "message_start", message: { ...message, content: [] } });
+	await runner.emitMessageEnd({ type: "message_end", message });
+	assert.match(status(), /^cache hit · until \d\d:\d\dZ · miss ≈\$0\.021$/);
+	await command("status");
+	assert.match(notes.at(-1)[1], /seeded, provisional[\s\S]*observed live; end = message_end receipt[\s\S]*since request start:[\s\S]*since response end:[\s\S]*Forecast for the next request: cache hit/);
+	await command("learn");
+	assert.match(notes.at(-1)[1], /github-copilot\/gpt-6\.1-sol: 1 pairs \(1 historical, 0 live, 0 both\); 1 qualified/);
+	await command("history 5");
+	assert.match(notes.at(-1)[1], /historical response github-copilot\/gpt-6\.1-sol stop=stop in=200 cacheRead=10000/);
+	await runner.emit({ type: "model_select", model: { provider: "github-copilot", id: "gpt-6-astra" }, previousModel: model, source: "set" });
+	assert.match(status(), /^uncertain · model changed · miss ≈\$/);
+	await runner.emit({ type: "session_shutdown", reason: "quit" });
+	assert.equal(status(), undefined, "status cleared on shutdown");
+
+	// A real SessionManager branch: resume recovers the anchor from the saved assistant entry (end = entry time).
+	const real = pi.SessionManager.inMemory(project);
+	real.appendMessage({ role: "user", content: [{ type: "text", text: secret }], timestamp: Date.now() - 61_000 });
+	const assistantId = real.appendMessage({ ...message, stopReason: "stop", timestamp: Date.now() - 60_000 });
+	const saved = real.getBranch().find((e) => e.id === assistantId);
+	assert.ok(saved && Number.isFinite(Date.parse(saved.timestamp)), "the saved entry has a timestamp for the end proxy");
+	const resumed = stubRunner(result, real, "cache-resume", model);
+	const resumedStatuses = [];
+	resumed.runner.setUIContext({ setWidget: () => {}, setStatus: (key, text) => resumedStatuses.push([key, text]), notify: (msg, level) => notes.push([level, msg]), confirm: async () => true }, "tui");
+	const resumedStatus = () => resumedStatuses.filter(([key]) => key === "cache-insights").at(-1)?.[1];
+	await resumed.runner.emit({ type: "session_start", reason: "resume" });
+	assert.match(resumedStatus(), /^cache hit · until \d\d:\d\dZ/, "resume recovers the anchor from the real branch");
+	await resumed.runner.getCommand("cache").handler("status", resumed.runner.createContext());
+	assert.match(notes.at(-1)[1], /recovered from the current branch; end = saved entry time \(proxy\)/);
+	await resumed.runner.emit({ type: "session_compact", compactionEntry: {}, reason: "threshold", willRetry: false });
+	assert.match(resumedStatus(), /^uncertain · context compacted/);
+	await resumed.runner.emit({ type: "message_start", message: { ...message, content: [], timestamp: Date.now() } });
+	await resumed.runner.emitMessageEnd({ type: "message_end", message: { ...message, timestamp: Date.now() } });
+	assert.match(resumedStatus(), /^cache hit/, "a new usable response is the next anchor");
+	await resumed.runner.emit({ type: "session_tree", newLeafId: assistantId, oldLeafId: null });
+	assert.match(resumedStatus(), /^uncertain · moved in the session tree/);
+	await resumed.runner.emitMessageEnd({ type: "message_end", message: { ...message, stopReason: "error", timestamp: Date.now() } });
+	assert.match(resumedStatus(), /^uncertain · previous request failed/);
+	await resumed.runner.emit({ type: "session_shutdown", reason: "quit" });
+	assert.deepEqual(resumed.errors, [], JSON.stringify(resumed.errors));
+	assert.ok(!fs.readFileSync(dbPath).toString("latin1").includes(secret), "metadata only");
+	assert.ok(!notes.some(([, msg]) => msg.includes(secret)));
+	assert.deepEqual(errors, [], JSON.stringify(errors));
+}
+
+function stubRunner(result, session, label, model) {
+	const runner = new pi.ExtensionRunner(result.extensions, result.runtime, project, session, {});
+	const errors = [];
+	runner.onError((e) => errors.push(e));
+	const unexpected = (name) => () => {
+		throw new Error(`unexpected ${name} call in ${label} smoke`);
+	};
+	runner.bindCore(
+		{
+			sendMessage: unexpected("sendMessage"),
+			sendUserMessage: unexpected("sendUserMessage"),
+			appendEntry: (customType, data) => session.appendCustomEntry(customType, data),
+			setSessionName: unexpected("setSessionName"),
+			getSessionName: () => undefined,
+			setLabel: unexpected("setLabel"),
+			getActiveTools: () => ["read", "cursor_worker"],
+			getAllTools: () => [],
+			getSettings: () => ({}),
+			setActiveTools: unexpected("setActiveTools"),
+			refreshTools: unexpected("refreshTools"),
+			getCommands: () => [],
+			setModel: unexpected("setModel"),
+			getThinkingLevel: () => "xhigh",
+			setThinkingLevel: unexpected("setThinkingLevel"),
+		},
+		{
+			getModel: () => model,
+			getScopedModels: () => [],
+			isIdle: () => true,
+			isProjectTrusted: () => true,
+			getSignal: () => undefined,
+			abort: () => {},
+			hasPendingMessages: () => false,
+			shutdown: () => {},
+			getContextUsage: () => undefined,
+			compact: () => {},
+			getSystemPrompt: () => "",
+		},
+	);
+	return { runner, errors };
 }

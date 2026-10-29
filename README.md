@@ -11,6 +11,7 @@ It contains:
 - `/cursor-delegate <task>` prompt template.
 - A dependency-free core in `lib/` (ACP client, profile enforcement, permission review, worker manager, private state).
 - A separate, independent progress-updates extension with the `/progress` command (see [Progress updates](#progress-updates)).
+- A separate, independent cache-insights extension with the `/cache` command: a status-bar prompt-cache forecast from a profile you seed, plus metadata-only history import (see [Cache insights](#cache-insights-seeded-forecast-opt-in)).
 
 ## Requirements
 
@@ -194,6 +195,29 @@ Each run reports its Cursor profile (`model=… context=… effort=… fast=…`
 - `/progress on|off|status|clear` (`enable`/`disable` also work). `on`/`off` is saved in the session and follows the current branch (`/tree`, `/fork`, resume); a branch without a saved setting is on. `clear` empties the widget and keeps collecting.
 - These are milestones Pi's model writes in its normal replies, not Cursor worker heartbeats. The extension makes no extra model calls and does no polling.
 
+## Cache insights (seeded forecast, opt-in)
+
+`extensions/cache-insights/index.ts` is a separate extension over `lib/cache-insights/` (no Cursor or progress imports). It shows a status-bar forecast for whether your **next** request will reuse the provider's prompt cache. The forecast comes from a profile **you seed**, and from the previous response on the current session branch. It is a local, provisional estimate, not provider confirmation. It makes no model requests and never warms the cache.
+
+- **Status labels:** `cache hit` while the time since the previous request started **and** the time since it ended are both under the seeded hit minutes; `cache expired` once both are over the seeded expire minutes; `uncertain` in between, exactly at either edge, and after anything that may change the cached prefix (model, thinking, system prompt or tool changes, compaction, `/tree`, fork, `/reload`, errors, aborts, a different answering model, or a cache warm). Times are absolute (local, or UTC), and an optional approximate input-cost range is shown (USD, GitHub credits at 1 credit = $0.01 for credit-based plans only, or both; a Pi catalog estimate, not a bill).
+- **Nothing happens until you set it up.** Loading the extension creates no files. Setup writes only `<Pi agent dir>/cache-insights/cache-insights.sqlite` (follows `PI_CODING_AGENT_DIR`; directory `0700`, file `0600`). It never changes Pi settings.
+- **Metadata only:** timestamps, provider/model/API ids, token counts, and catalog cost estimates. Prompts, messages, tool data, error text, headers, ids from your sessions, and paths are never stored.
+
+Setup with the CLI (in this checkout), then fully restart Pi:
+
+```bash
+node scripts/cache-insights.mjs seed github-copilot/gpt-6.1-sol 25 30   # your own minutes; other models get no profile
+node scripts/cache-insights.mjs import                                 # optional: seeded models from ~/.pi/agent/sessions (or --model p/m ...)
+node scripts/cache-insights.mjs learn                                  # observed envelope; never changes the profile
+node scripts/cache-insights.mjs recording on                           # optional: also record new responses
+node scripts/cache-insights.mjs settings --time utc --cost both        # optional
+node scripts/cache-insights.mjs migrate                                # only if /cache status asks for an upgrade
+```
+
+In Pi: `/cache status`, `/cache history [n]`, and `/cache learn [provider/model]` are read-only. In the interactive TUI, `/cache seed <provider/model> <hitMinutes> <expireMinutes>`, `/cache import [provider/model ...]`, `/cache on|off`, `/cache settings [time local|utc] [cost off|usd|credits|both]`, and `/cache migrate` change only the feature's database (seed and import ask for confirmation; import without models uses the seeded ones). Invalid commands are rejected before anything is written. Needs Node's built-in `node:sqlite`; without it the feature stops with one generic warning and the rest of Pi is unaffected.
+
+Exact behaviour, data rules, and what is not in V1: [docs/cache-insights.md](docs/cache-insights.md).
+
 ## Known limitations
 
 - In `plan` mode, Cursor's `cursor/create_plan` request gets `-32601`, which Cursor treats as accepted. It may then write a local plan file, and the plan content appears only in `events.jsonl`.
@@ -205,7 +229,8 @@ Each run reports its Cursor profile (`model=… context=… effort=… fast=…`
 ```bash
 npm test            # deterministic tests with a fake ACP agent (offline)
 npm run check       # syntax check, no downloads
-PI_PACKAGE_DIR=/path/to/node_modules/@earendil-works/pi-coding-agent npm run smoke:extension   # load every manifest extension (cursor, progress, approval history) via Pi's real loader, offline, stubbed reviewer model
+PI_PACKAGE_DIR=/path/to/node_modules/@earendil-works/pi-coding-agent npm run smoke:extension   # load every manifest extension (cursor, progress, approval history, cache insights) via Pi's real loader, offline, stubbed reviewer model
+node scripts/cache-insights.mjs --help   # cache-insights CLI (writes only its own database, on explicit commands)
 npm run smoke:live  # opt-in: real Cursor, two turns + session/load resume, ask mode, no edits requested
 npm run configure:cursor   # dry run of the native Cursor approvalMode helper (see above)
 ```
