@@ -81,13 +81,17 @@ test("live anchors use message_end receipt; a long stream disagrees between cloc
 
 test("an unknown provider/model never inherits another model's seed", async (t) => {
 	const { env, s } = seeded(t);
-	for (const model of [{ provider: "openai", model: SOL.model }, { provider: SOL.provider, model: "gpt-6-astra" }]) {
-		const h = loadExtension(t, env, { branch: s.branch(), model });
-		await h.emit("session_start", { reason: "startup" });
-		assert.equal(h.status(), "uncertain · no seeded profile for this model");
-		await h.respond({ provider: model.provider, model: model.model });
-		assert.equal(h.status(), "uncertain · no seeded profile for this model");
-		await h.emit("session_shutdown", { reason: "quit" });
+	// Automatic profiles on (the default): these models have no evidence of their own, so they show learning progress.
+	for (const [auto, footer] of [["on", "uncertain · learning: no pairs yet · recording off · /cache"], ["off", "uncertain · no seeded profile for this model"]]) {
+		if (auto === "off") assert.equal(cli(env, ["settings", "--auto", "off"]).status, 0);
+		for (const model of [{ provider: "openai", model: SOL.model }, { provider: SOL.provider, model: "gpt-6-astra" }]) {
+			const h = loadExtension(t, env, { branch: s.branch(), model });
+			await h.emit("session_start", { reason: "startup" });
+			assert.equal(h.status(), footer, `auto ${auto}`);
+			await h.respond({ provider: model.provider, model: model.model });
+			assert.equal(h.status(), footer, `auto ${auto}: still no inheritance after a response`);
+			await h.emit("session_shutdown", { reason: "quit" });
+		}
 	}
 });
 
@@ -339,7 +343,7 @@ test("the known Opus alias links seed, import, learning, and live anchors; ids a
 	assert.match(h.status(), /^cache hit · until 12:25 UTC/);
 	const other = loadExtension(t, env, { branch: s.branch(), model: { provider: "anthropic", model: "claude-opus-5.5" } });
 	await other.emit("session_start", { reason: "resume" });
-	assert.equal(other.status(), "uncertain · no seeded profile for this model", "never across providers");
+	assert.equal(other.status(), "uncertain · learning: no pairs yet · recording off · /cache", "never across providers: anthropic has no seed and no evidence of its own");
 });
 
 test("a repeated message_end never moves the anchor or pairs a response with itself, with recording on or off", async (t) => {
