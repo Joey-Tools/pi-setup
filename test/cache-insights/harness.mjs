@@ -111,8 +111,8 @@ export class SessionFile {
 }
 
 /** Runs the CLI in the workspace with an explicit --agent-dir; never the real home. */
-export function cli(env, args, { json = true } = {}) {
-	const childEnv = { ...process.env };
+export function cli(env, args, { json = true, extraEnv = {} } = {}) {
+	const childEnv = { ...process.env, ...extraEnv };
 	delete childEnv.PI_CODING_AGENT_DIR;
 	const r = spawnSync(process.execPath, [CLI, ...args, "--agent-dir", env.agentDir, ...(json ? ["--json"] : [])], { cwd: env.workspace, env: childEnv, encoding: "utf8" });
 	let data;

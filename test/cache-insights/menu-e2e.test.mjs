@@ -52,10 +52,10 @@ test("/cache settings edits time and cost through pickers; values persist and ch
 	await h.emit("session_start", { reason: "startup" });
 	h.script({ select: [/^Times:/, "UTC", /^Cost:/, "USD and GitHub credits", "Back"] });
 	await h.command("settings");
-	assert.deepEqual(h.selects[0].choices, ["Times: UTC (change)", "Cost: off (change)", "Local timezone guide", "Back"]);
+	assert.deepEqual(h.selects[0].choices, ["Times: UTC (change)", "Cost: off (change)", "Automatic profiles: on (change)", "Local timezone guide", "Back"]);
 	assert.deepEqual(h.selects[3].choices, ["Off", "USD", "GitHub credits", "USD and GitHub credits", "Back"]);
-	assert.deepEqual(h.selects[4].choices, ["Times: UTC (change)", "Cost: both (change)", "Local timezone guide", "Back"], "the loop shows saved values");
-	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "both" });
+	assert.deepEqual(h.selects[4].choices, ["Times: UTC (change)", "Cost: both (change)", "Automatic profiles: on (change)", "Local timezone guide", "Back"], "the loop shows saved values");
+	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "both", auto: "on" });
 	assert.equal(h.status(), "cache hit · until 12:15 UTC · miss ≈$0.021 (2.1 cr)");
 	h.script({ select: [/^Times:/, "Local time", "Back"] });
 	await h.command("settings");
@@ -214,7 +214,7 @@ test("direct subcommands are unchanged; outside the TUI, or without select, bare
 	await h.command("settings time local cost usd");
 	await h.command("history 5");
 	assert.equal(h.selects.length, 0, "explicit subcommands never open the menu");
-	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "local", cost: "usd" });
+	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "local", cost: "usd", auto: "on" });
 
 	for (const mode of ["print", "json", "rpc"]) {
 		const r = loadExtension(t, env, { mode, branch: s.branch() });

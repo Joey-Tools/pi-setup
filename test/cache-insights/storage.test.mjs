@@ -237,16 +237,21 @@ test("settings, profiles, and the recording choice persist and are shared betwee
 	const a = await open(env, { create: true });
 	const b = await open(env, { busyTimeoutMs: 50 });
 	t.after(() => (a.close(), b.close()));
-	assert.deepEqual(b.settings(), { time: "local", cost: "usd" });
+	assert.deepEqual(b.settings(), { time: "local", cost: "usd", auto: "on" }, "automatic profiles default on without a saved choice");
 	a.setSettings({ time: "utc", cost: "both" });
 	a.setProfile({ provider: "github-copilot", model: "gpt-6.1-sol", hitMinutes: 25, expireMinutes: 30 });
 	a.setRecording(true);
-	assert.deepEqual(b.settings(), { time: "utc", cost: "both" });
+	assert.deepEqual(b.settings(), { time: "utc", cost: "both", auto: "on" });
 	assert.equal(b.getProfile("github-copilot", "gpt-6.1-sol").expireOverMs, 30 * 60_000);
 	assert.equal(b.getProfile("github-copilot", "gpt-6-astra"), null);
 	assert.equal(b.isRecording(), true);
-	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "both" });
-	for (const bad of [{ time: "pst" }, { cost: "eur" }]) assert.throws(() => a.setSettings(bad), CacheInsightsError);
+	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "both", auto: "on" });
+	a.setSettings({ auto: "off" });
+	assert.deepEqual(b.settings(), { time: "utc", cost: "both", auto: "off" }, "the automatic-profile choice is shared too");
+	assert.deepEqual(cli(env, ["settings", "--auto", "on"]).data.settings.auto, "on");
+	assert.equal(b.settings().auto, "on");
+	for (const bad of [{ time: "pst" }, { cost: "eur" }, { auto: "maybe" }, { auto: true }]) assert.throws(() => a.setSettings(bad), CacheInsightsError);
+	assert.equal(cli(env, ["settings", "--auto", "maybe"]).status, 2, "the CLI rejects an invalid choice before opening anything");
 	for (const [hit, expire] of [[0, 30], [31, 30], [25, 2000], [Number.NaN, 30]]) {
 		assert.throws(() => a.setProfile({ provider: "p", model: "m", hitMinutes: hit, expireMinutes: expire }), (e) => e.code === "invalid_profile");
 	}

@@ -104,7 +104,7 @@ test("status clocks always carry their zone: UTC mode, and local offsets of the 
 
 	assert.equal(cli(env, ["settings", "--time", "utc"]).status, 0);
 	for (const tz of ["Asia/Tokyo", "America/New_York", "Asia/Kolkata"]) assert.equal(local(october, tz, T0), "cache hit · until 12:15 UTC", `UTC mode ignores TZ=${tz}`);
-	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "usd" }, "CLI settings API unchanged");
+	assert.deepEqual(cli(env, ["settings"]).data.settings, { time: "utc", cost: "usd", auto: "on" }, "CLI settings API unchanged (automatic profiles default on, unsaved)");
 });
 
 test("the settings menu explains local time and opens a read-only guide; Back changes nothing", async (t) => {
@@ -126,5 +126,5 @@ test("the settings menu explains local time and opens a read-only guide; Back ch
 	const g = loadExtension(t, stored);
 	g.script({ select: ["Local timezone guide", "Back"] });
 	await g.command("settings");
-	assert.deepEqual(cli(stored, ["settings"]).data.settings, { time: "local", cost: "usd" }, "stored settings unchanged");
+	assert.deepEqual(cli(stored, ["settings"]).data.settings, { time: "local", cost: "usd", auto: "on" }, "stored settings unchanged");
 });

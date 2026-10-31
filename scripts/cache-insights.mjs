@@ -17,9 +17,12 @@ Commands:
   import [--model provider/model]... [--sessions-dir DIR]
                                               metadata-only import of Pi session files; without --model,
                                               imports the models that have a seeded profile
-  learn [--model provider/model]              observed candidate envelopes (never changes profiles)
+  learn [--model provider/model]              observed candidate envelopes and evidence so far
+                                              (never changes profiles or forecasts)
   recording on|off                            save whether live responses are recorded
-  settings [--time local|utc] [--cost off|usd|credits|both]
+  settings [--time local|utc] [--cost off|usd|credits|both] [--auto on|off]
+                                              --auto: automatic, provisional profiles for models
+                                              without a seed (derived, never stored; default on)
   migrate                                     upgrade an older cache-insights database in place
 Options (any command):
   --agent-dir DIR   Pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)
@@ -32,7 +35,7 @@ const COMMANDS = {
 	import: { args: 0, flags: ["--model", "--sessions-dir"] },
 	learn: { args: 0, flags: ["--model"] },
 	recording: { args: 1, flags: [] },
-	settings: { args: 0, flags: ["--time", "--cost"] },
+	settings: { args: 0, flags: ["--time", "--cost", "--auto"] },
 	migrate: { args: 0, flags: [] },
 };
 const GLOBAL_FLAGS = ["--agent-dir", "--root"];
@@ -82,7 +85,8 @@ function plan(argv) {
 	if (command === "settings") {
 		p.time = one("--time");
 		p.cost = one("--cost");
-		if ((p.time !== undefined && !ci.TIME_SETTINGS.includes(p.time)) || (p.cost !== undefined && !ci.COST_SETTINGS.includes(p.cost))) throw usage();
+		p.auto = one("--auto");
+		if ((p.time !== undefined && !ci.TIME_SETTINGS.includes(p.time)) || (p.cost !== undefined && !ci.COST_SETTINGS.includes(p.cost)) || (p.auto !== undefined && !ci.AUTO_SETTINGS.includes(p.auto))) throw usage();
 	}
 	return p;
 }
@@ -99,9 +103,26 @@ async function run(p) {
 			case "status": {
 				db = await open(false);
 				if (!db) return notSetUp();
-				const json = { setUp: true, schemaVersion: db.schemaVersion, recording: db.isRecording(), settings: db.settings(), counts: db.counts(), profiles: db.listProfiles() };
+				const settings = db.settings();
+				// `profiles` are the stored (manual) seeds only; `effectiveProfiles` adds automatic ones, which are never stored.
+				const effectiveProfiles = ci
+					.evidenceReport(db, {})
+					.evidence.filter((e) => e.effectiveProfile)
+					.map((e) => ({ provider: e.provider, model: e.model, kind: e.effective, hitUnderMs: e.effectiveProfile.hitUnderMs, expireOverMs: e.effectiveProfile.expireOverMs, source: e.effectiveProfile.source }));
+				const json = { setUp: true, schemaVersion: db.schemaVersion, recording: db.isRecording(), settings, counts: db.counts(), profiles: db.listProfiles(), effectiveProfiles, autoPolicy: ci.AUTO_POLICY };
 				const profiles = json.profiles.map((x) => `  ${x.provider}/${x.model}: hit < ${x.hitUnderMs / 60000} min, expired > ${x.expireOverMs / 60000} min (${x.source})`);
-				out([`Database: ${db.paths.dbPath} (schema ${json.schemaVersion})`, `Recording: ${json.recording ? "on" : "off"}; time ${json.settings.time}; cost ${json.settings.cost}`, `Samples: ${json.counts.samples} (${json.counts.historical} historical, ${json.counts.live} live); pairs: ${json.counts.pairs}`, "Profiles:", ...(profiles.length ? profiles : ["  none"])].join("\n"), json);
+				const autos = effectiveProfiles.filter((x) => x.kind === "auto").map((x) => `  ${x.provider}/${x.model}: hit < ${(x.hitUnderMs / 60000).toFixed(1)} min, expired > ${(x.expireOverMs / 60000).toFixed(1)} min (automatic, provisional; not stored)`);
+				out(
+					[
+						`Database: ${db.paths.dbPath} (schema ${json.schemaVersion})`,
+						`Recording: ${json.recording ? "on" : "off"}; time ${settings.time}; cost ${settings.cost}; automatic profiles ${settings.auto}`,
+						`Samples: ${json.counts.samples} (${json.counts.historical} historical, ${json.counts.live} live); pairs: ${json.counts.pairs}`,
+						"Profiles:",
+						...(profiles.length ? profiles : ["  none"]),
+						...(autos.length ? ["Automatic profiles in use:", ...autos] : []),
+					].join("\n"),
+					json,
+				);
 				return 0;
 			}
 			case "seed": {
@@ -123,8 +144,8 @@ async function run(p) {
 				db = await open(false);
 				if (!db) return notSetUp();
 				const ref = p.models[0] ? ci.parseModelRef(p.models[0]) : {};
-				const envelopes = ci.learnEnvelopes(db, ref);
-				out(learnText(envelopes, db.listProfiles()), { envelopes, profiles: db.listProfiles() });
+				const report = ci.evidenceReport(db, ref);
+				out(learnText(report, { time: db.settings().time, recording: db.isRecording() }), { envelopes: report.envelopes, profiles: db.listProfiles(), evidence: report.evidence, autoPolicy: ci.AUTO_POLICY });
 				return 0;
 			}
 			case "recording": {
@@ -135,11 +156,11 @@ async function run(p) {
 				return 0;
 			}
 			case "settings": {
-				const change = p.time !== undefined || p.cost !== undefined;
+				const change = p.time !== undefined || p.cost !== undefined || p.auto !== undefined;
 				db = await open(change);
 				if (!db) return notSetUp();
-				const s = change ? db.setSettings({ time: p.time, cost: p.cost }) : db.settings();
-				out(`Settings: time ${s.time}, cost ${s.cost}.`, { settings: s });
+				const s = change ? db.setSettings({ time: p.time, cost: p.cost, auto: p.auto }) : db.settings();
+				out(`Settings: time ${s.time}, cost ${s.cost}, automatic profiles ${s.auto}.`, { settings: s });
 				return 0;
 			}
 			case "migrate": {

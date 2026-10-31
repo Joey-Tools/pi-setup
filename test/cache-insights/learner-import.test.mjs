@@ -271,11 +271,11 @@ test("switching provider/model while recording keeps samples, candidates, and pr
 	await h.respond();
 	assert.equal(h.status(), "cache hit · until 12:26 UTC");
 	await select(astra, SOL);
-	assert.equal(h.status(), "uncertain · no seeded profile for this model", "uncertain at once: Astra has no profile and never inherits Sol's");
+	assert.equal(h.status(), "uncertain · learning: no pairs yet · /cache", "uncertain at once: Astra has no profile and never inherits Sol's");
 	await h.respond(astra);
 	h.advance(MIN);
 	await h.respond(astra);
-	assert.equal(h.status(), "uncertain · no seeded profile for this model", "Astra never inherits the Sol seed");
+	assert.equal(h.status(), "uncertain · learning: reuses 1/2, later misses 0/2 · /cache", "Astra never inherits the Sol seed; its own evidence counts toward an automatic profile");
 	assert.equal(cli(env, ["seed", "github-copilot/gpt-6-astra", "10", "15"]).status, 0);
 	h.advance(MIN);
 	await h.respond(astra);
